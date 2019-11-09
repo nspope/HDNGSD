@@ -54,12 +54,27 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// FST
+arma::mat FST(const arma::sp_mat saf0, const arma::sp_mat saf1, const arma::mat sfs);
+RcppExport SEXP _haplodiplo_FST(SEXP saf0SEXP, SEXP saf1SEXP, SEXP sfsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::sp_mat >::type saf0(saf0SEXP);
+    Rcpp::traits::input_parameter< const arma::sp_mat >::type saf1(saf1SEXP);
+    Rcpp::traits::input_parameter< const arma::mat >::type sfs(sfsSEXP);
+    rcpp_result_gen = Rcpp::wrap(FST(saf0, saf1, sfs));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 RcppExport SEXP _rcpp_module_boot_Haplodiplo();
 
 static const R_CallMethodDef CallEntries[] = {
     {"_haplodiplo_sfs1d", (DL_FUNC) &_haplodiplo_sfs1d, 4},
     {"_haplodiplo_sfs2d", (DL_FUNC) &_haplodiplo_sfs2d, 5},
     {"_haplodiplo_sfs3d", (DL_FUNC) &_haplodiplo_sfs3d, 6},
+    {"_haplodiplo_FST", (DL_FUNC) &_haplodiplo_FST, 3},
     {"_rcpp_module_boot_Haplodiplo", (DL_FUNC) &_rcpp_module_boot_Haplodiplo, 0},
     {NULL, NULL, 0}
 };

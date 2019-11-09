@@ -187,6 +187,15 @@ tests <- function()
   sfs3d(saf0, saf0, saf0, block, 0, FALSE)
   sfs3d(saf0, saf0, saf0, block, 0, TRUE)
 
+  # Fst
+  saf0 <- Hd$saf(0:(Hd$sites()-1), 0:6)
+  saf1 <- Hd$saf(0:(Hd$sites()-1), 6:12)
+  myunfold <- sfs2d(saf0, saf1, block, 0, FALSE)
+  myfold <- sfs2d(saf0, saf1, block, 0, TRUE)
+  head(FST(saf0, saf1, myunfold))
+  head(FST(saf0, saf1, myfold))
+
+
   # SNP calling
   glf[,1,1] <- 0
   Hd <- Haplodiplo$new(glf, counts, pos, ploidy)

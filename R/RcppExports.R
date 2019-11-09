@@ -13,3 +13,7 @@ sfs3d <- function(saf0, saf1, saf2, block, num_boot, fold) {
     .Call(`_haplodiplo_sfs3d`, saf0, saf1, saf2, block, num_boot, fold)
 }
 
+FST <- function(saf0, saf1, sfs) {
+    .Call(`_haplodiplo_FST`, saf0, saf1, sfs)
+}
+

@@ -3339,7 +3339,7 @@ struct Fst : public RcppParallel::Worker
   {
     // numerator and denominator of Bhatia et al 2015 Genome Research estimator
     
-    arma::rowvec::fixed<2> out = arma::zeros<arma::vec>(2);
+    arma::rowvec::fixed<2> out = arma::zeros<arma::rowvec>(2);
 
     double den = 0.;
 
