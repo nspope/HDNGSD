@@ -1,0 +1,1373 @@
+
+#include <RcppArmadillo.h> 
+#include <RcppParallel.h> 
+#include <string>
+#include <sys/stat.h>
+#include <vector>
+#include <iterator>
+
+// [[Rcpp::depends(RcppArmadillo,RcppParallel)]]
+// [[Rcpp::plugins(cpp11)]]
+
+struct GenotypeLikelihood
+{
+  // Read in beagle binary format >like
+  // parse ploidy, find index for haploids / diploids >haploid, diploid, ploidy
+  // replace missing (0.3333 0.3333 0.3333) with 0. and count number of missing chroms per site >missing
+  // count number of chroms, samples, sites >chromosomes, samples, sites
+
+  const std::string filepath;
+  const arma::uvec ploidy;
+
+  arma::uvec haploids, diploids, missing_samples, missing_sites;
+  arma::sp_umat missing;
+  unsigned chromosomes, samples; 
+  size_t sites;
+  arma::cube like;
+
+  //FILE* handle;
+  //unsigned buffer_size;
+  //arma::cube like;
+  //size_t offset;
+
+//  GenotypeLikelihood (const std::string filepath, const arma::uvec& ploidy) 
+//    : ploidy (ploidy)
+//    , filepath (filepath)
+//  {
+//    if (arma::max(ploidy) > 2 || arma::min(ploidy) < 1)
+//      Rcpp::stop ("GLReader: allowed ploidy are (1, 2)\n");
+//    haploids = arma::find(ploidy == 1);
+//    diploids = arma::find(ploidy == 2);
+//    chromosomes = haploids.n_elem + diploids.n_elem * 2;
+//    samples = ploidy.n_elem;
+//
+//    //get size of file and calculate number of columns
+//    //n_chr[i] = filesize(saf_file[i]) / (n_site * sizeof(double)) - 1;
+//    FILE *handle = std::fopen(filepath.c_str(), "r");
+//    if (handle == NULL)
+//      Rcpp::stop ("GLReader: could not open file " + filepath + "\n");
+//
+//    //check if gzipped
+//    unsigned char magic[2];
+//    std::fread(magic, sizeof(magic), 1, handle);
+//    if (magic[0] == 0x1f && magic[1] == 0x8b)
+//      Rcpp::stop ("GLReader: cannot read gzipped files\n");
+//
+//    //read in data
+//    sites = filesize(filepath) / (sizeof(double) * samples * 3.);
+//    like = arma::ones<arma::cube>(3, samples, sites);
+//    std::cout << std::fread(like.memptr(), sizeof(double), sites * samples * 3, handle) << std::endl;
+//    std::fclose(handle);
+//
+//    // normalize by site/sample (just in case), set to zero if GLs are equal, and calculate missingness
+//    // TODO why not row/colsum missing
+//    missing_samples = arma::zeros<arma::uvec>(sites);
+//    missing_sites = arma::zeros<arma::uvec>(samples);
+//    missing = arma::zeros<arma::umat>(samples, sites);
+//    for (size_t i=0; i<sites; ++i)
+//    {
+//      for (unsigned j=0; j<samples; ++j)
+//      {
+//        like.slice(i).col(j) /= arma::accu(like.slice(i).col(j)); //pretty sure this is pointless, better to check if any are negative
+//        if (fabs(like.at(0,i,j) - like.at(2,i,j)) < 1e-8)
+//        {
+//          like.slice(i).col(j) *= 0.;
+//          missing_samples[i] += ploidy[j];
+//          missing_sites[j] += 1;
+//          missing.at(j,i) = 1;
+//        }
+//      }
+//    }
+//    std::fprintf(stderr, "GLReader: read %u sites across %u chromosomes in %u samples\n", sites, chromosomes, samples);
+//  }
+//
+//  size_t filesize(const std::string& filename) {
+//    struct stat st;
+//    if(stat(filename.c_str(), &st) != 0) {
+//      return 0;
+//    }
+//    return st.st_size;   
+//  }
+//
+  GenotypeLikelihood (arma::cube lmat, const arma::uvec& ploidy) 
+    : ploidy (ploidy)
+    , like (lmat)
+  {
+    //TODO BIG TODO check for FIXED alleles... e.g. sites where the sum of likelihoods is only nonzero for one genotype ... only applies to admixture
+    if (arma::max(ploidy) > 2 || arma::min(ploidy) < 1)
+      Rcpp::stop ("GLReader: allowed ploidy are (1, 2)\n");
+    if (ploidy.n_elem != like.n_cols)
+      Rcpp::stop ("GLReader: dimension mismatch\n");
+
+    haploids = arma::find(ploidy == 1);
+    diploids = arma::find(ploidy == 2);
+    chromosomes = haploids.n_elem + diploids.n_elem * 2;
+    samples = ploidy.n_elem;
+    sites = like.n_slices;
+
+    // normalize by site/sample (just in case), set to zero if GLs are equal, and calculate missingness
+    missing_samples = arma::zeros<arma::uvec>(sites);
+    missing_sites   = arma::zeros<arma::uvec>(samples);
+    missing         = arma::zeros<arma::sp_umat>(samples, sites);
+    for (size_t i=0; i<sites; ++i)
+      for (unsigned j=0; j<samples; ++j)
+      {
+        like.slice(i).col(j) /= arma::accu(like.slice(i).col(j)); 
+        if ( (ploidy[j]==1 && (fabs(like.at(0,j,i) - like.at(2,j,i)) < 1e-8)) || 
+             (ploidy[j]==2 && (fabs(like.at(0,j,i) - like.at(2,j,i)) < 1e-8) && (fabs(like.at(0,j,i) - like.at(1,j,i)) < 1e-8)) )
+        {
+          like.slice(i).col(j) *= 0.;
+          missing_samples[i] += ploidy[j];
+          missing_sites[j] += 1;
+          missing.at(j,i) = 1;
+        }
+      }
+    std::fprintf(stderr, "GLReader: read %lu sites across %u chromosomes in %u samples\n", sites, chromosomes, samples);
+  }
+};
+
+struct Paralogs : public RcppParallel::Worker
+{ // DONE
+  public:
+  const GenotypeLikelihood &GL;
+  const arma::uvec site_index, sample_index;
+  arma::mat diphet, haphet;
+
+  private:
+  const arma::uvec &rsite_index, &rsample_index;
+  arma::mat &rdiphet, &rhaphet;
+
+  public:
+  Paralogs (const GenotypeLikelihood& GL, const arma::uvec site_index, const arma::uvec sample_index)
+    : GL (GL)
+    , site_index (site_index)
+    , sample_index (sample_index)
+    , diphet (0, 0)
+    , haphet (0, 0)
+    // references accessed by slaves
+    , rsite_index (site_index)
+    , rsample_index (sample_index)
+    , rdiphet (diphet)
+    , rhaphet (haphet)
+  {
+    if (site_index.max() > GL.sites)
+      Rcpp::stop("Paralogs: invalid entries in site index");
+    if (sample_index.max() > GL.samples)
+      Rcpp::stop("Paralogs: invalid entries in sample index");
+
+    // only allocate if haploids/diploids present
+    if (arma::any(GL.ploidy.elem(site_index) == 2))
+    {
+      diphet.set_size (site_index.n_elem, 3);
+      diphet.fill(arma::datum::nan);
+    }
+    if (arma::any(GL.ploidy.elem(site_index) == 1))
+    {
+      haphet.set_size (site_index.n_elem, 3);
+      haphet.fill(arma::datum::nan);
+    }
+
+    RcppParallel::parallelFor(0, site_index.n_elem, *this);
+    //(*this)(0, site_index.n_elem);
+  }
+
+  Paralogs (const Paralogs& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    // references accessed by slaves
+    , rsite_index (rhs.rsite_index)
+    , rsample_index (rhs.rsample_index)
+    , rdiphet (rhs.rdiphet)
+    , rhaphet (rhs.rhaphet)
+  {}
+
+  void operator() (const size_t start, const size_t end)
+  {
+    arma::uvec keep (GL.samples);
+    arma::vec  tmp  (GL.samples);
+    for (size_t i=start; i!=end; ++i)
+    {
+      unsigned i2 = rsite_index[i];
+      keep.zeros();
+      for (unsigned j=0; j<rsample_index.n_elem; ++j) 
+      {
+        unsigned j2 = rsample_index[j];
+        if (!GL.missing(j2,i2))
+          keep[j2] = GL.ploidy[j2];
+      }
+
+      tmp = arma::trans(GL.like.slice(i2).row(1));
+      if (arma::any(keep == 1))
+      {
+        PoissonBinomial poibin (tmp.elem(arma::find(keep == 1)));
+        rhaphet.at(i,0) = double(poibin.dim);
+        rhaphet.at(i,1) = poibin.expectation();
+        rhaphet.at(i,2) = poibin.cdf(0.);
+      }
+      if (arma::any(keep == 2))
+      {
+        PoissonBinomial poibin (tmp.elem(arma::find(keep == 2)));
+        rdiphet.at(i,0) = double(poibin.dim);
+        rdiphet.at(i,1) = poibin.expectation();
+        rdiphet.at(i,2) = poibin.cdf(0.5);
+      }
+    }
+  }
+
+  struct PoissonBinomial
+  {
+    const unsigned dim;
+    const arma::vec PDF;
+
+    PoissonBinomial (const arma::vec& P)
+      : dim (P.n_elem)
+      , PDF (pdf(P))
+    {}
+
+    arma::vec pdf (const arma::vec& P)
+    {
+      if (arma::any(P < 0. || P > 1.))
+        Rcpp::stop ("PoissonBinomial: probabilities must be in [0,1]\n");
+
+      // convolution algorithm from Biscarri
+      arma::vec out (P.n_elem+1, arma::fill::zeros);
+      arma::vec::fixed<2> p;
+      if (out.n_elem == 1)
+        out(0) = 1.;
+      else
+      {
+        out(0) = 1.-P(0); out(1) = P(0);
+        for (unsigned i=1; i<P.n_elem; ++i)
+        {
+          p(0) = 1.-P(i); p(1) = P(i);
+          for (int j=i; j>=0; --j)
+            out(j+1) = out(j) * p(1) + out(j+1) * p(0);
+          out(0) *= p(0);
+        }
+      }
+      return out;
+    }
+
+    double cdf (const double& thresh)
+    {
+      // always round threshold down to nearest integer:
+      // [0,1,2,3,4,5,6] -> heterozygote majority would be 3 or more
+      // [0,1,2,3,4,5] -> heterozygote majority would be 3 or more
+      return arma::accu(PDF.subvec(floor(thresh * double(dim)), dim));
+    }
+
+    double expectation (void)
+    {
+      double out = 0.;
+      for (unsigned i=0; i<PDF.n_elem; ++i)
+        out += double(i) * PDF[i];
+      return out;
+    }
+  };
+};
+
+struct Frequencies : public RcppParallel::Worker
+{ //DONE
+  
+  // This struct estimates allele frequencies from genotype likelihoods using the EM algorithm described in Li, H. 2011. Bioinformatics
+  // It is essentially the same as that implemented in ANGSD, with the exception that haplodiploid samples are allowed.
+
+  public:
+  const GenotypeLikelihood &GL;
+  const arma::uvec site_index, sample_index;
+  const unsigned chromosomes;
+  arma::vec freq, lrt, pval;
+
+  private:
+  const arma::uvec &rsite_index, &rsample_index;
+  arma::vec &rfreq, &rlrt, &rpval;
+  
+  public:
+  Frequencies (const GenotypeLikelihood& GL, const arma::uvec site_index, const arma::uvec sample_index)
+    : site_index (site_index)
+    , sample_index (sample_index)
+    , GL (GL)
+    , chromosomes (arma::accu(GL.ploidy.elem(sample_index)))
+    , freq (site_index.n_elem)
+    , lrt (site_index.n_elem)
+    , pval (site_index.n_elem)
+    // references that slave interacts with
+    , rsite_index (site_index)
+    , rsample_index (sample_index)
+    , rfreq (freq)
+    , rlrt (lrt)
+    , rpval (pval)
+  {
+    if (arma::max(site_index) >= GL.sites)
+      Rcpp::stop ("Frequencies: invalid entries in site index");
+    if (arma::max(sample_index) >= GL.samples)
+      Rcpp::stop ("Frequencies: invalid entries in sample index");
+
+    freq.fill(arma::datum::nan);
+    lrt.fill(arma::datum::nan);
+    pval.fill(arma::datum::nan);
+
+    RcppParallel::parallelFor(0, site_index.n_elem, *this);
+    //(*this)(0, site_index.n_elem);
+  }
+
+  Frequencies (const Frequencies& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , chromosomes (rhs.chromosomes)
+    // references that slave interacts with
+    , rsite_index (rhs.site_index)
+    , rsample_index (rhs.sample_index)
+    , rfreq (rhs.rfreq)
+    , rlrt (rhs.rlrt)
+    , rpval (rhs.rpval)
+  {}
+
+  void operator() (const size_t start, const size_t end)
+  {
+    // should only interact with references
+    double loglik;
+    for (size_t i = start; i != end; ++i)
+    {
+      // check that there's data
+      unsigned missing = 0;
+      for (auto j2 : rsample_index)
+        missing += GL.missing.at(j2, rsite_index[i]) * GL.ploidy[j2];
+
+      // estimate allele frequencies via EM
+      if (chromosomes - missing > 0) 
+      {
+        loglik = EM (rfreq[i], i);
+        // test against null of monomorphic ancestral or monomorphic fixed
+        rlrt[i]  = -2.*null(i, rfreq[i]>0.5) + 2.*loglik;
+        rpval[i] = R::pchisq(rlrt[i], 1., false, false); 
+      }
+    }
+  }
+
+  double null (const size_t i, bool fixed)
+  {
+    // likelihood under null model (freq = 0 || 1)
+    double loglik = 0;
+    for (unsigned j=0; j<rsample_index.n_elem; ++j)
+    {
+      unsigned j2 = rsample_index[j],
+               i2 = rsite_index[i];
+      if (!GL.missing(j2,i2))
+        loglik += log(GL.like.at(int(fixed)*2,j2,i2));
+    }
+    return loglik;
+  }
+
+  bool freaky (double& f, double& loglik, const size_t i)
+  {
+    // missing samples have likelihood set to zero, so do not increment num/den
+    // just remember to divide by the number of nonmissing samples!
+    const double tol  = 0.00001, //same as in angsd
+                 rtol = 0.;
+
+    const unsigned i2 = rsite_index[i];
+
+    double num = 0.,
+           den = 0.,
+           of  = f;
+    unsigned n = 0;
+
+    f      = 0.; 
+    loglik = 0.;
+
+    for (unsigned j=0; j<rsample_index.n_elem; ++j)
+    {
+      const unsigned j2 = rsample_index[j];
+      if (!GL.missing(j2,i2))
+      {
+        if (GL.ploidy[j2] == 1)
+        {
+          num = GL.like.at(2,j2,i2) * of;      
+          den = GL.like.at(2,j2,i2) * of + 
+                GL.like.at(0,j2,i2) * (1.-of);
+        } 
+        else if (GL.ploidy[j2] == 2)
+        {
+          // sum_{samples} sum_{0 \leq g \leq ploidy} g lik(g) dbinom(g, ploidy, freq) / (nsamples sum_{samples} sum_{0 \leq g \leq ploidy} lik(g) dbinom(g, ploidy, freq))
+          num = 2. * GL.like.at(2,j2,i2) * 1. * of * of +     // hom
+                1. * GL.like.at(1,j2,i2) * 2. * of * (1.-of); // het
+          den = GL.like.at(2,j2,i2) * 1. * of * of +          // hom
+                GL.like.at(1,j2,i2) * 2. * of * (1.-of) +     // het
+                GL.like.at(0,j2,i2) * 1. * (1.-of) * (1.-of); // hom
+        }
+        n      += GL.ploidy[j2];
+        f      += num/den;
+        loglik += log(den);
+      }
+    }
+    f /= double(n);
+
+    return (f - of < tol && of - f < tol) || (f/of < 1.+rtol && f/of > 1.-rtol) || !arma::is_finite(f);
+  }
+
+  double EM (double& freak, const size_t i)
+  {
+    // starting conditions, iters, stoping conditions are same as angsd
+    const unsigned maxiter = 100; 
+    double loglik = 0;
+    freak = 0.001; // could use better guess
+    for (unsigned iter=0; iter<maxiter; ++iter)
+      if (freaky(freak, loglik, i))
+        break;
+    return loglik;
+  }
+};
+
+struct Admixture : public RcppParallel::Worker
+{ //DONE 
+
+  // same as NGSadmix but allows for haplodiploid samples
+  //
+  // edge case where all samples are missing at a site is probably not working
+
+  public:
+  const GenotypeLikelihood &GL;				// contains likelihoods, ploidy, dimensions
+  const arma::uvec site_index, 			  // only use these sites
+                   sample_index;
+  const unsigned K;   								// number of clusters, number of chromosomes to hold out
+  arma::mat Qmat, Fmat, loglik, cval; // admixture, frequencies, per site loglik and cross-validation
+  arma::cube Acoef, Bcoef;						// per-site coefficients (could move to private eventually)
+	arma::umat holdout;						      // holdout (test) set
+	double loglikelihood = 0.;					// total loglikelihood
+	double CVscore = 0.;								// total cross-validation score
+  unsigned iter = 0;
+
+  private:
+  double errtol = 1e-9;// not using dynamic bounds
+  double stepmax = 1., stepmin = 1.; // adaptive steplength
+
+	// references for slaves
+  const arma::uvec &rsite_index, &rsample_index;
+  const arma::mat &rQmat, &rFmat;
+	const arma::umat &rholdout;
+  arma::mat &rloglik, &rcval;
+  arma::cube &rAcoef, &rBcoef;
+
+	//temporaries
+	arma::mat Q0, Q1, Q2, F0, F1, F2, Qd1, Qd2, Qd3, Fd1, Fd2, Fd3;
+
+  public:
+  Admixture (const GenotypeLikelihood& GL, const arma::uvec site_index, const arma::uvec sample_index, const unsigned K, const arma::uvec CV)
+    : GL (GL)
+    , site_index (site_index)
+    , sample_index (sample_index)
+    , K (K)
+    , Qmat (K, sample_index.n_elem, arma::fill::randu)
+    , Fmat (K, site_index.n_elem, arma::fill::randu)
+    , loglik (sample_index.n_elem, site_index.n_elem)
+		, holdout (sample_index.n_elem, site_index.n_elem, arma::fill::zeros)
+		, cval (sample_index.n_elem, site_index.n_elem)
+    , Acoef (K, sample_index.n_elem, site_index.n_elem)
+    , Bcoef (K, sample_index.n_elem, site_index.n_elem)
+    // references that interface with slaves
+    , rsite_index (site_index)
+    , rsample_index (sample_index)
+    , rQmat (Qmat)
+    , rFmat (Fmat)
+		, rholdout (holdout)
+    , rloglik (loglik)
+		, rcval (cval)
+    , rAcoef (Acoef)
+    , rBcoef (Bcoef)
+		// temporaries
+		, Q0 (arma::size(Qmat), arma::fill::zeros)
+		, Q1 (arma::size(Qmat), arma::fill::zeros)
+		, Q2 (arma::size(Qmat), arma::fill::zeros)
+		, Qd1 (arma::size(Qmat), arma::fill::zeros)
+		, Qd2 (arma::size(Qmat), arma::fill::zeros)
+		, Qd3 (arma::size(Qmat), arma::fill::zeros)
+		, F0 (arma::size(Fmat), arma::fill::zeros)
+		, F1 (arma::size(Fmat), arma::fill::zeros)
+		, F2 (arma::size(Fmat), arma::fill::zeros)
+		, Fd1 (arma::size(Fmat), arma::fill::zeros)
+		, Fd2 (arma::size(Fmat), arma::fill::zeros)
+		, Fd3 (arma::size(Fmat), arma::fill::zeros)
+  {
+		// everything here should interface with originals not references
+		if (CV.n_elem > 0 && arma::max(CV) >= sample_index.n_elem * site_index.n_elem) 
+			Rcpp::stop ("Admixture: invalid entries in holdout index");
+    if (K < 1)
+      Rcpp::stop ("Admixture: must have at least one cluster");
+    if (K > 999)
+      Rcpp::stop ("Admixture: number of clusters capped at 999");
+    if (arma::max(site_index) >= GL.sites)
+      Rcpp::stop ("Admixture: invalid entries in site index");
+    if (arma::max(sample_index) >= GL.samples)
+      Rcpp::stop ("Admixture: invalid entries in sample index");
+
+		// create indicator matrix for hold-out sample
+    if (CV.n_elem > 0)
+      holdout.elem(CV).fill(1);
+
+    // DEPR
+		// dropout is done on the basis of CHROMOSOMES not SAMPLES ... (does this make sense?)
+		//double holdoutprob = double(CV)/double(GL.chromosomes);//TODO
+		//holdout.zeros();
+		//if (holdoutprob > 0.)
+		//	for (size_t i=0; i<site_index.n_elem; ++i)
+		//		for (unsigned j=0; j<sample_index.n_elem; ++j)
+		//			holdout.at(j,i) = int(arma::randu<double>() < holdoutprob/double(GL.ploidy[sample_index[j]]));
+
+		// at some point allow starting vals to be specified
+    const unsigned maxiter = 1000;
+    Qmat.each_col([](arma::vec& x) { x /= arma::accu(x); });
+		
+		for (iter=0; iter<maxiter; ++iter)
+    {
+      bool converged = EMaccel(Qmat, Fmat);
+      //TODO make mutables clearer; should always be passed as arguments (e.g. loglikelihood, cvscore!
+      if((iter+1) % 10 == 0) 
+        std::cout << "Admixture: iteration " << iter+1 << ", loglik = " << loglikelihood << std::endl;
+			if(converged)
+				break;
+    }
+  
+		//for (iter=0; iter<1000; ++iter)
+    //  EM(Qmat, Fmat);
+		
+		if (iter == maxiter)
+			Rcpp::warning("Admixture: did not converge in maximum number of iterations");
+
+		// final iteration to calculate likelihood
+		Q0 = Qmat; F0 = Fmat;
+		loglikelihood = EM(Q0, F0); // this should USE Qmat, Fmat in likelihood calculation but not update them.
+
+		// average CV score
+		CVscore = -2. * arma::accu(cval) / double(arma::accu(holdout));
+  }
+
+  Admixture (const Admixture& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , K (rhs.K)
+    // references that interface with slaves
+    , rsite_index (rhs.rsite_index)
+    , rsample_index (rhs.rsample_index)
+    , rQmat (rhs.rQmat)
+    , rFmat (rhs.rFmat)
+		, rholdout (rhs.rholdout)
+    , rloglik (rhs.rloglik)
+		, rcval (rhs.rcval)
+    , rAcoef (rhs.rAcoef)
+    , rBcoef (rhs.rBcoef)
+  {}
+
+  // TODO: I would prefer to simplify so that only arguments are mutables or indices (e.g. get rid of Q/F in below)
+  void Diploid (arma::cube& A, arma::cube& B, arma::mat& ll, arma::mat& cv, const arma::mat& Q, const arma::mat& F, const size_t i, const unsigned j)
+  {
+    // everything in here should interact with references
+    // j = sample, i = site, k = cluster
+    unsigned j2 = rsample_index[j],
+             i2 = rsite_index[i];
+    if (GL.missing.at(j2, i2)) 
+      return;
+    else
+    {
+      // check
+      const double h  = arma::accu(Q.col(j) % F.col(i)),
+                   hn = arma::accu(Q.col(j) % (1.-F.col(i)));
+      const arma::vec::fixed<3> hwe = {GL.like(0,j2,i2) * (1.-h) * (1.-h),
+       																 GL.like(1,j2,i2) * 2. * h * (1.-h),
+       																 GL.like(2,j2,i2) * h * h};
+      double num = 0., den = 0.;
+      for (unsigned g=0; g<3; ++g)
+      {
+        num += double(g) * hwe[g];
+        den += hwe[g];
+      }
+			
+			if (rholdout.at(j,i))
+				cv.at(j,i) = log(den);
+			else
+			{
+				ll.at(j,i) = log(den);
+				for (unsigned k=0; k<K; ++k)
+				{
+					A.at(k,j,i) = 0.5 * num/den * Q.at(k,j)*F.at(k,i)/h;
+					B.at(k,j,i) = 0.5 * (2.-num/den) * Q.at(k,j)*(1.-F.at(k,i))/hn;
+				}
+			}
+    }
+  }
+
+  void Haploid (arma::cube& A, arma::cube& B, arma::mat& ll, arma::mat& cv, const arma::mat& Q, const arma::mat& F, const size_t i, const unsigned j)
+  {
+    // everything in here should interact with references
+    // j = sample, i = site, k = cluster
+    unsigned j2 = rsample_index[j],
+             i2 = rsite_index[i];
+    if (GL.missing.at(j2, i2)) 
+      return;
+    else
+    {
+      //check
+      const double h  = arma::accu(Q.col(j) % F.col(i)),
+                   hn = arma::accu(Q.col(j) % (1.-F.col(i)));
+      double den = GL.like(0,j2,i2) * hn + GL.like(2,j2,i2) * h;
+
+			if (rholdout.at(j,i))
+				cv.at(j,i) = log(den);
+			else
+			{
+				ll.at(j,i) = log(den);
+				for (unsigned k=0; k<K; ++k)
+				{
+					A.at(k,j,i) = GL.like(2,j2,i2) * Q.at(k,j)*F.at(k,i)/den;
+					B.at(k,j,i) = GL.like(0,j2,i2) * Q.at(k,j)*(1.-F.at(k,i))/den;
+          //std::cout<<GL.like(0,j,rindex[i]) << Q.at(k,j) << (1.-F.at(k,i)) << 1./den << std::endl;
+          //std::cout<<GL.like(0,j,rindex[i]) * Q.at(k,j)*(1.-F.at(k,i))/den<<std::endl;
+				}
+			}
+    }
+  }
+
+  void operator () (const size_t start, const size_t end)
+  {
+    // every large container passed should be a reference
+    for (size_t i=start; i!=end; ++i)
+    {
+      //TODO handle totally missing data? set Fmat entry to NaN if totally missing
+      for (unsigned j=0; j<rsample_index.n_elem; ++j)
+      {
+        unsigned j2 = rsample_index[j];
+        if (GL.ploidy[j2] == 1)
+          Haploid(rAcoef, rBcoef, rloglik, rcval, rQmat, rFmat, i, j);
+        else if (GL.ploidy[j2] == 2)
+          Diploid(rAcoef, rBcoef, rloglik, rcval, rQmat, rFmat, i, j);
+      }
+    }
+  }
+
+  double EM (arma::mat& Q, arma::mat& F)
+  {
+    // this should interact with the original containers
+    // this uses Qmat/Fmat in to calculate likelihood updates, and stores the output in Q/F
+    loglik.zeros();
+		cval.zeros();
+    Acoef.zeros();
+    Bcoef.zeros();
+
+    RcppParallel::parallelFor(0, site_index.n_elem, *this); 
+    //(*this)(0, site_index.n_elem);
+
+    Q = (arma::sum(Acoef, 2) + arma::sum(Bcoef, 2));
+    Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+    F = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
+    F = arma::clamp(F, errtol, 1.-errtol);
+    Q = arma::clamp(Q, errtol, 1.-errtol);
+
+    //Acoef.print("Acoef"); Bcoef.print("Bcoef");
+    //Q.print("Q"); F.print("F");
+
+    return arma::accu(loglik); // / double(arma::accu(loglik != 0.));
+  }
+
+  bool EMaccel (arma::mat& Q, arma::mat& F)
+  {
+    // this should interact with the original containers
+    // this uses Qmat/Fmat in to calculate likelihood updates, and stores the output in Q/F
+		const double tol = 1e-5;
+		const double mstep = 4;
+
+    Q0 = Q;	F0 = F;
+
+		// first secant condition
+    loglikelihood = EM (Q, F);
+	  Q1  = Q;		  	F1  = F;
+		Qd1 = Q - Q0;   Fd1 = F - F0;
+	  double sr2 = arma::accu(arma::pow(Qd1,2)) + arma::accu(arma::pow(Fd1,2));
+	  if (!arma::is_finite(sr2) || sqrt(sr2) < tol)
+			return true;
+
+		// second secant condition
+    loglikelihood = EM (Q, F);
+	  Q2  = Q;		  	F2  = F;
+		Qd2 = Q - Q1;   Fd2 = F - F1;
+	  double sq2 = arma::accu(arma::pow(Qd2,2)) + arma::accu(arma::pow(Fd2,2));
+	  if (!arma::is_finite(sq2) || sqrt(sq2) < tol)
+			return true;
+
+		// magic
+		Qd3 = Qd2 - Qd1; Fd3 = Fd2 - Fd1;
+	  double sv2 = arma::accu(arma::pow(Qd3,2)) + arma::accu(arma::pow(Fd3,2));
+	  double alpha = sqrt(sr2/sv2);
+		alpha = std::max(stepmin, std::min(stepmax, alpha));
+
+		// project onto domain
+    F = arma::clamp(F0 + 2.*alpha*Fd1 + alpha*alpha*Fd3, errtol, 1.-errtol);
+    Q = arma::clamp(Q0 + 2.*alpha*Qd1 + alpha*alpha*Qd3, errtol, 1.-errtol);
+	  Q.each_col([](arma::vec& x) { x /= arma::accu(x); });
+
+		// stabilize
+		loglikelihood = EM (Q, F);
+
+    // TODO:could revert to second iteration if loglikelihood has decreased
+		if (alpha == stepmax)
+			stepmax *= mstep;
+		
+		return false;
+  }
+};
+
+struct Saf : public RcppParallel::Worker
+{
+// On rescaling: this seems like a good idea in general and is necessary if bounds are dynamically updated. For diploids, we have
+//   h[j,x] = 1/choose(chrom[j], x) * 
+//        (choose(chrom[j-1], x) * L[0,j] * h[j-1,x] + 2 * choose(chrom[j-1], x-1) * L[1,j] * h[j-1,x-1] + choose(chrom[j-1],x-2) * L[2,j] * h[j-1,x-2])
+//          = 1/(chrom[j]*(chrom[j]-1)) *
+//            ( (chrom[j] - x) * (chrom[j] - x - 1) * L[0,j] * h[j-1,x] +
+//              2 * x * (chrom[j] - x) * L[1,j] * h[j-1,x-1] +
+//              x * (x - 1) * L[2,j] * h[j-1,x-2] )
+// For haploids: ... 
+//   h[j,x] = 1/choose(chrom[j], x) * 
+//        (choose(chrom[j-1], x) * L[0,j] * h[j-1,x] + choose(chrom[j-1], x-1) * L[1,j] * h[j-1,x-1])
+//          = 1/chrom[j] *
+//            ( (chrom[j] - x) * L[0,j] * h[j-1,x] +
+//              x * L[1,j] * h[j-1,x-1])
+
+  const GenotypeLikelihood &GL;
+  const arma::uvec site_index, sample_index;
+  const unsigned chromosomes;
+  arma::sp_mat SAF;
+
+  private:
+  const arma::uvec &rsite_index, &rsample_index;
+  std::vector<unsigned> rowind, colind;
+  std::vector<double>  values;
+
+  public:
+  Saf (const GenotypeLikelihood& GL, const arma::uvec site_index, const arma::uvec sample_index)
+    : GL (GL)
+    , sample_index (sample_index)
+    , site_index (site_index)
+    , chromosomes (arma::accu(GL.ploidy.elem(sample_index)))
+    // references used by slaves
+    , rsite_index (site_index)
+    , rsample_index (sample_index)
+  {
+    if (site_index.max() > GL.sites)
+      Rcpp::stop("Saf: invalid entries in site index");
+    if (sample_index.max() > GL.samples)
+      Rcpp::stop("Saf: invalid entries in sample index");
+
+    // TODO: have to check if join works in same order as split (so that order of sites is preserved on merger)
+    // Does it matter? It's all going into a matrix anyway
+
+    RcppParallel::parallelReduce(0, site_index.n_elem, *this);
+    //(*this)(0, site_index.n_elem);
+
+    // make sparse matrix
+    SAF = arma::sp_mat(arma::join_vert(arma::urowvec(rowind), arma::urowvec(colind)), arma::vec(values), chromosomes+1, site_index.n_elem);
+  }
+
+  Saf (const Saf& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , chromosomes (rhs.chromosomes)
+    // references used by slaves
+    , rsite_index (rhs.rsite_index)
+    , rsample_index (rhs.rsample_index)
+  {}
+
+  void operator() (const size_t start, const size_t end)
+  {
+    // heuristic for memory allocation
+    rowind.reserve((end-start+1)*5);
+    colind.reserve((end-start+1)*5);
+    values.reserve((end-start+1)*5);
+    for (size_t i=start; i!=end; ++i)
+    {
+      // TODO totally missing data?
+      score_limited(i, rowind, colind, values);
+    }
+  }
+
+  void join (const Saf& rhs)
+  {
+    values.insert(values.end(), 
+                  std::make_move_iterator(rhs.values.begin()), 
+                  std::make_move_iterator(rhs.values.end()));
+    rowind.insert(rowind.end(), 
+                  std::make_move_iterator(rhs.rowind.begin()), 
+                  std::make_move_iterator(rhs.rowind.end()));
+    colind.insert(colind.end(), 
+                  std::make_move_iterator(rhs.colind.begin()), 
+                  std::make_move_iterator(rhs.colind.end()));
+  }
+
+  double likelihood0 (const arma::vec::fixed<3>& p, const arma::vec& h, const int pos, const unsigned nchr, const unsigned ploidy)
+  { // not rescaled, as would be done in ANGSD
+    double out = 0.;
+    if (ploidy == 2)
+    {
+      if (pos >= 0 && pos <= nchr)
+      {
+        out += p[0] * h[pos];
+        if (pos-1 >= 0)
+        {
+          out += 2 * p[1] * h[pos-1];
+          if (pos-2 >= 0)
+            out += p[2] * h[pos-2];
+        }
+      }
+    } else if (ploidy == 1)
+    {
+      if (pos >= 0 && pos <= nchr)
+      {
+        out += p[0] * h[pos];
+        if (pos-1 >= 0)
+          out += p[2] * h[pos-1];
+      }
+    }
+    return out;
+  }
+
+  double likelihood (const arma::vec::fixed<3>& p, const arma::vec& h, const int pos, const unsigned nchr, const unsigned ploidy)
+  {
+    double out = 0.;
+    if (ploidy == 2)
+    {
+      if (pos >= 0 && pos <= nchr)
+      {
+        out += double(nchr-pos) * double(nchr-pos-1) * p[0] * h[pos];
+        if (pos-1 >= 0)
+        {
+          out += 2. * double(pos) * double(nchr-pos) * p[1] * h[pos-1];
+          if (pos-2 >= 0)
+            out += double(pos) * double(pos-1) * p[2] * h[pos-2];
+        }
+      }
+    } else if (ploidy == 1)
+    {
+      if (pos >= 0 && pos <= nchr)
+      {
+        out += double(nchr-pos) * p[0] * h[pos];
+        if (pos-1 >= 0)
+          out += double(pos) * p[2] * h[pos-1];
+      }
+    }
+    return out;
+  }
+
+  void score_limited (const unsigned i, std::vector<unsigned>& rind, std::vector<unsigned>& cind, std::vector<double>& vals) 
+  {
+    const double epsilon = std::pow(10., -9);
+    const unsigned i2 = rsite_index[i];
+
+    arma::vec saf (chromosomes + 1, arma::fill::zeros);
+    arma::vec::fixed<3> p;
+    unsigned nchr, bestguess;
+    int left, right;
+    double check;
+
+    // initialize with first sample
+    unsigned j2 = rsample_index[0];
+    if (GL.missing.at(j2,i2))
+      p.fill(1./3.);
+    else {
+      p[0]  = GL.like.at(0,j2,i2);
+      p[1]  = GL.like.at(1,j2,i2);
+      p[2]  = GL.like.at(2,j2,i2);
+    }
+    p[1] *= double(GL.ploidy[j2]-1); // drop hets for haploids
+    p    /= arma::accu(p); // the amazing transformation of likelihood to posterior
+    nchr  = GL.ploidy[j2];
+    left  = 0;
+    right = GL.ploidy[j2];
+    if (GL.ploidy[j2] == 2)
+    {
+      saf[0]  = p[0];
+      saf[1]  = p[1];
+      saf[2]  = p[2];
+    } 
+    else if (GL.ploidy[j2] == 1)
+    {
+      saf[0]  = p[0];
+      saf[1]  = p[2];
+    }
+
+    //arma::vec saf0 = saf;//DEBUG
+    //saf0[1] *= GL.ploidy[j2]; 
+
+    // main loop
+    for (unsigned j=1; j<rsample_index.n_elem; ++j)
+    {
+      j2    = rsample_index[j];
+      nchr += GL.ploidy[j2];
+
+      // assign equal likelihoods to missing data
+      // drop "haploid hets" and normalize
+      if (GL.missing.at(j2,i2))
+        p.fill(1./3.);
+      else {
+        p[0]  = GL.like.at(0,j2,i2);
+        p[1]  = GL.like.at(1,j2,i2);
+        p[2]  = GL.like.at(2,j2,i2);
+      }
+      p[1] *= double(GL.ploidy[j2]-1); 
+      p    /= arma::accu(p); // the amazing transformation of likelihood to posterior
+
+      // MLE genotype
+      if (p[0] > p[1] && p[0] > p[2])
+        bestguess = 0;
+      else if (p[1] > p[2] && GL.ploidy[j2] == 2)
+        bestguess = 1;
+      else // if missing this will always be the case
+        bestguess = GL.ploidy[j2];
+
+      // update left bound
+      left  += bestguess;
+      while (true)
+      {
+        check = likelihood (p, saf, left, nchr, GL.ploidy[j2]);
+        if (check < epsilon || left == 0)
+          break;
+        left -= 1;
+      }
+
+      // update right bound
+      right += bestguess;
+      while (true)
+      {
+        check  = likelihood (p, saf, right, nchr, GL.ploidy[j2]);
+        if (check < epsilon || right == nchr)
+          break;
+        right += 1;
+      }
+
+      // normalize
+      for (int k=nchr; k>=0; --k)
+        saf.at(k) = (k >= left && k <= right) ? likelihood(p, saf, k, nchr, GL.ploidy[j2]) : 0.;
+      saf /= saf.max();
+
+      //DEBUG
+      //for (int k=nchr; k>=0; --k)
+      //  saf0.at(k) = likelihood0(p, saf0, k, nchr, GL.ploidy[j2]);
+    }
+
+    //DEBUG
+    //for (int k=0; k<=nchr; ++k)
+    //  saf0.at(k) /= R::choose(nchr, k);
+    //saf0 /= saf0.max();
+
+    // store as a sparse matrix
+    // (can't have concurrent write access to sparse matrix)
+    for (unsigned k=left; k<=right; ++k)
+    {
+      rind.push_back(k);
+      cind.push_back(i);
+      vals.push_back(saf[k]);
+    }
+  }
+};
+
+struct Covar : public RcppParallel::Worker
+{// DONE except include estimation of global allele frequencies
+
+  // I am basically using Anders' method but providing the individual allele freqs rather than iteratively estimating them
+  // so, I would get something like the ngsTools method if I first use EM to get global freqs and use these
+  // and I would get something like pcangsd if I use Admixture to get structure-aware freqs
+
+  // for diploid genotype we have var(g) = 2p(1-p), e[g] = 2p, g = 2 (1-p_i) p_i l(1) 1 + p_i^2 l(2) 2
+  // for haploid genotype we have var(g) = p(1-p), e[g] = p, g = l(2) p_i
+  // so correlation for haploid-haploid:
+  //    (l_i(2) * p - p) (l_j(2) * p - p) / (p * (1-p))
+  // so correlation for haploid-diploid:
+  //    (l_i(2) * p - p) (2 * l_j(1) * (1-p) * p + 2 * l_j(2) * p * p - 2 * p) / (sqrt(2) * p * (1-p)) 
+  // and diploid diploid:
+  //    (2 * l_i(1) * (1-p) * p + 2 * l_i(2) * p * p - 2 * p) (2 * l_j(1) * (1-p) * p + 2 * l_j(2) * p * p - 2 * p) / (2 * p * (1-p)) 
+
+  const GenotypeLikelihood &GL;
+  const arma::mat freq;
+  const arma::vec global; //global allele frequency estimates: I could include estimation as part of this routine
+  const arma::uvec site_index, sample_index;
+  arma::mat  covar;
+  arma::umat sites;
+
+  private:
+  const arma::mat &rfreq;
+  const arma::vec &rglobal;
+  const arma::uvec &rsite_index, &rsample_index;
+
+  public:
+  Covar (const GenotypeLikelihood& GL, const arma::uvec site_index, const arma::uvec sample_index, const arma::mat freq, const arma::vec global)
+    : GL (GL)
+    , freq (freq)
+    , global (global)
+    , site_index (site_index)
+    , sample_index (sample_index)
+    , covar (sample_index.n_elem, sample_index.n_elem, arma::fill::zeros)
+    , sites (sample_index.n_elem, sample_index.n_elem, arma::fill::zeros)
+    // references used by slaves
+    , rfreq (freq)
+    , rglobal (global)
+    , rsite_index (site_index)
+    , rsample_index (sample_index)
+  {
+    if (site_index.max() > GL.sites)
+      Rcpp::stop("Covar: invalid entries in site index");
+    if (sample_index.max() > GL.samples)
+      Rcpp::stop("Covar: invalid entries in sample index");
+    if (freq.n_rows != sample_index.n_elem) 
+      Rcpp::stop("Covar: individual site frequency matrix must have as many rows as entries of the sample index");
+    if (freq.n_cols != site_index.n_elem)
+      Rcpp::stop("Covar: individual site frequency matrix must have as many cols as entries of the site index");
+    if (global.n_elem != site_index.n_elem)
+      Rcpp::stop("Covar: global site frequency vector must have as many elements as entries of the site index");
+
+    RcppParallel::parallelReduce (0, site_index.n_elem, *this);
+    //(*this)(0, site_index.n_elem);
+    covar /= arma::conv_to<arma::mat>::from(sites);
+  }
+
+  Covar (const Covar& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , covar (arma::size(rhs.covar), arma::fill::zeros)
+    , sites (arma::size(rhs.sites), arma::fill::zeros)
+    // references used by slaves
+    , rfreq (rhs.rfreq)
+    , rglobal (rhs.rglobal)
+    , rsite_index (rhs.rsite_index)
+    , rsample_index (rhs.rsample_index)
+  {}
+
+  double expectation (const double f, const arma::vec::fixed<3>& p, const unsigned ploidy)
+  {
+    // expected genotype given HWE and likelihoods
+    double num = 0., den = 0.;
+    if (ploidy == 1)
+    {
+      num = p[2] * f;
+      den = p[0] * (1.-f) + p[2] * f;
+    }
+    else if (ploidy == 2)
+    {
+      num = p[1] * 2. * f * (1.-f) + 
+            2. * p[2] * f * f;
+      den = p[0] * (1.-f) * (1.-f) +
+            p[1] * (1.-f) * f * 2. +
+            p[2] * f * f;
+    }
+    return num/den;
+  }
+
+  double covariance (const unsigned i, const unsigned j, const unsigned k)
+  {
+    const unsigned i2 = rsite_index[i],
+                   j2 = rsample_index[j],
+                   k2 = rsample_index[k];
+    arma::vec::fixed<3> pj, pk;
+    double fj, ej, vj, gj, fk, ek, vk, gk, pi;
+
+    // deal with missing data
+    if (GL.missing(j2, i2))
+      pj.fill(1./3.);
+    else
+    {
+      pj[0] = GL.like(0,j2,i2);
+      pj[1] = GL.like(1,j2,i2);
+      pj[2] = GL.like(2,j2,i2);
+    }
+    pj[1] *= double(GL.ploidy[j2] - 1);
+    pj    /= arma::accu(pj);
+
+    if (GL.missing(k2, i2))
+      pk.fill(1./3.);
+    else
+    {
+      pk[0] = GL.like(0,k2,i2);
+      pk[1] = GL.like(1,k2,i2);
+      pk[2] = GL.like(2,k2,i2);
+    }
+    pk[1] *= double(GL.ploidy[k2] - 1);
+    pk    /= arma::accu(pk);
+
+    // covariance calculation
+    fj = rfreq.at(j,i);
+    fk = rfreq.at(k,i);
+    pi = rglobal.at(i);
+    ej = double(GL.ploidy[j2]) * pi;
+    ek = double(GL.ploidy[k2]) * pi;
+    gj = expectation(fj, pj, GL.ploidy[j2]);
+    gk = expectation(fk, pk, GL.ploidy[k2]);
+    vj = sqrt(double(GL.ploidy[j2]) * pi * (1.-pi));
+    vk = sqrt(double(GL.ploidy[k2]) * pi * (1.-pi));
+
+    //std::cout << GL.ploidy[j2] << " " << GL.ploidy[k2] << " " << vj << " " << gj << " " << ej << " " << vk << " " << gk << " " << ek << std::endl;
+
+    return (gj-ej)/vj * (gk-ek)/vk;
+  }
+
+  double variance (const unsigned i, const unsigned j)
+  {
+    const unsigned i2 = rsite_index[i],
+                   j2 = rsample_index[j];
+    arma::vec::fixed<3> pj;
+    double fj, ej, vj, gj, pi, num = 0., den = 0.;
+    
+
+    // deal with missing data
+    if (GL.missing(j2, i2))
+      pj.fill(1./3.);
+    else
+    {
+      pj[0] = GL.like(0,j2,i2);
+      pj[1] = GL.like(1,j2,i2);
+      pj[2] = GL.like(2,j2,i2);
+    }
+    pj[1] *= double(GL.ploidy[j2] - 1);
+    pj    /= arma::accu(pj);
+
+    // variance calculation
+    fj = rfreq.at(j,i);
+    pi = rglobal.at(i);
+    ej = double(GL.ploidy[j2]) * pi;
+    vj = double(GL.ploidy[j2]) * pi * (1.-pi);
+
+    if (GL.ploidy[j2] == 1)
+    {
+      num = std::pow(0.-ej,2) * pj[0] * (1.-fj) + 
+            std::pow(1.-ej,2) * pj[2] * fj;
+      den = pj[0] * (1.-fj) + pj[2] * fj;
+    }
+    else if (GL.ploidy[j2] == 2)
+    {
+      num = std::pow(0.-ej,2) * pj[0] * (1.-fj) * (1.-fj) +
+            std::pow(1.-ej,2) * pj[1] * fj * (1.-fj) * 2. +
+            std::pow(2.-ej,2) * pj[2] * fj * fj; 
+      den = pj[0] * (1.-fj) * (1.-fj) + 
+            pj[1] * fj * (1.-fj) * 2. +
+            pj[2] * fj * fj;
+    }
+    gj = num/den;
+    
+    return gj / vj;
+  }
+
+  void operator() (const size_t start, const size_t end)
+  {
+    double out;
+    for (size_t i=start; i!=end; ++i)
+      for (unsigned j=0; j<rsample_index.n_elem; ++j)
+        for (unsigned k=j; k<rsample_index.n_elem; ++k)
+        {
+          if (k == j)
+          {
+            out = variance(i, j);
+            if (arma::is_finite(out))
+            {
+              sites.at(j,j) += 1;
+              covar.at(j,j) += out;
+            }
+          }
+          else
+          {
+            out = covariance(i, j, k);
+            if (arma::is_finite(out))
+            {
+              sites.at(j,k) += 1;
+              sites.at(k,j) += 1;
+              covar.at(j,k) += out;
+              covar.at(k,j) += out;
+            }
+          }
+        }
+  }
+
+  void join (const Covar& rhs)
+  {
+    covar += rhs.covar;
+    sites += rhs.sites;
+  }
+};
+
+struct Master
+{
+  GenotypeLikelihood GL;
+
+ // Master (std::string filename, arma::uvec ploidy)
+ //   : GL (filename, ploidy)
+ // {}
+  Master (arma::cube like, arma::uvec ploidy)
+    : GL (like, ploidy)
+  {
+    arma::arma_rng::set_seed(1);
+  }
+
+  Rcpp::List paralogs (arma::uvec site_index, arma::uvec sample_index)
+  {
+    arma::arma_rng::set_seed(1);
+
+    Paralogs para (GL, site_index, sample_index);
+    return Rcpp::List::create(
+        Rcpp::_["haphet"] = para.haphet,
+        Rcpp::_["diphet"] = para.diphet
+        );
+  }
+
+  Rcpp::List poibin (arma::vec prob)
+  {
+    arma::arma_rng::set_seed(1);
+
+    Paralogs::PoissonBinomial pb (prob);
+    return Rcpp::List::create(
+        Rcpp::_["pdf"] = pb.PDF,
+        Rcpp::_["cdf"] = pb.cdf(0.5),
+        Rcpp::_["mean"] = pb.expectation()
+        );
+  }
+
+  Rcpp::List frequencies (arma::uvec site_index, arma::uvec sample_index)
+  {
+    arma::arma_rng::set_seed(1);
+
+    Frequencies freq (GL, site_index, sample_index);
+    return Rcpp::List::create(
+        Rcpp::_["freq"] = freq.freq,
+        Rcpp::_["lrt"] = freq.lrt,
+        Rcpp::_["pval"] = freq.pval
+        );
+  }
+
+  Rcpp::List admixture (arma::uvec site_index, arma::uvec sample_index, const unsigned K, const unsigned CV)
+  {
+    arma::arma_rng::set_seed(1);
+
+    // create holdout matrix for cross validation
+    // being careful not to completely eliminate any sites
+    // TODO: this does not seem to work.
+    arma::umat holdout (sample_index.n_elem, site_index.n_elem);
+    if (CV > 0)
+      for (unsigned i=0; i<site_index.n_elem; ++i)
+      {
+        unsigned r = int(std::ceil(double(sample_index.n_elem)/double(CV)));
+        arma::uvec ind = arma::shuffle(arma::repelem(arma::regspace<arma::uvec>(1, CV), r, 1));
+        holdout.col(i) = ind.head(sample_index.n_elem);
+      }
+
+    // perform cross-validation
+    arma::vec CVscores (CV);
+    arma::mat debug0, debug1, debug2, debug3;
+    for (unsigned rep=1; rep<=CV; ++rep)
+    {
+      arma::uvec test_set = arma::find(holdout == rep);
+      fprintf(stderr, "Master->admixture: CV rep %u, %u entries withheld\n", rep, test_set.n_elem);
+      Admixture admixcv (GL, site_index, sample_index, K, test_set);
+      CVscores[rep-1] = admixcv.CVscore;
+      debug0 = admixcv.cval;
+      debug1 = admixcv.loglik;
+      debug2 = admixcv.Qmat;
+      debug3 = admixcv.Fmat;
+    }
+
+    fprintf(stderr, "Master->admixture: all data\n");
+    Admixture admix (GL, site_index, sample_index, K, arma::uvec::fixed<0>());
+
+    return Rcpp::List::create(
+        Rcpp::_["K"] = K,
+        Rcpp::_["Loglik"] = admix.loglikelihood,
+        Rcpp::_["CVscores"] = CVscores,
+        Rcpp::_["F"] = admix.Fmat,
+        Rcpp::_["Q"] = admix.Qmat,
+        Rcpp::_["holdout"] = holdout,//DEBUG
+        Rcpp::_["cvraw"] = debug0,//DEBUG
+        Rcpp::_["llraw"] = debug1,//DEBUG
+        Rcpp::_["qqraw"] = debug2,//DEBUG
+        Rcpp::_["ffraw"] = debug3//DEBUG
+        );
+  }
+
+  arma::sp_mat saf (arma::uvec site_index, arma::uvec sample_index)
+  {
+    Saf SAF (GL, site_index, sample_index);
+    return SAF.SAF;
+  }
+
+  Rcpp::List covar (arma::uvec site_index, arma::uvec sample_index, arma::mat freq, arma::vec global)
+  {
+    //TODO I could just estimate global here ... is there really any need to flexibly specify?
+    Covar cov (GL, site_index, sample_index, freq, global);
+    return Rcpp::List::create(
+        Rcpp::_["covar"] = cov.covar,
+        Rcpp::_["sites"] = cov.sites
+        );
+  }
+
+  // getters
+  arma::cube likelihoods (void) const
+  {
+    return GL.like;
+  }
+
+  arma::uvec ploidy (void) const
+  {
+    return GL.ploidy;
+  }
+
+  arma::uvec haploids (void) const
+  {
+    return GL.haploids;
+  }
+
+  arma::uvec diploids (void) const
+  {
+    return GL.diploids;
+  }
+
+  arma::uvec missing_sites (void) const
+  {
+    return GL.missing_sites;
+  }
+
+  arma::uvec missing_samples (void) const
+  {
+    return GL.missing_samples;
+  }
+
+  arma::sp_umat missing (void) const
+  {
+    return GL.missing;
+  }
+
+  size_t sites (void) const
+  {
+    return GL.sites;
+  }
+
+  unsigned samples (void) const
+  {
+    return GL.samples;
+  }
+
+  unsigned chromosomes (void) const
+  {
+    return GL.chromosomes;
+  }
+};
+
+RCPP_EXPOSED_CLASS(Master)
+RCPP_MODULE(haplodiplo) {
+  using namespace Rcpp;
+  class_<Master>("haplodiplo")
+//    .constructor<std::string, arma::uvec>()
+    .constructor<arma::cube, arma::uvec>()
+    .method("admixture", &Master::admixture)
+    .method("frequencies", &Master::frequencies)
+    .method("saf", &Master::saf)
+    .method("covar", &Master::covar)
+    .method("paralogs", &Master::paralogs)
+    .method("poibin", &Master::poibin)
+    .method("likelihoods", &Master::likelihoods)
+    .method("ploidy", &Master::ploidy)
+    .method("diploids", &Master::diploids)
+    .method("haploids", &Master::haploids)
+    .method("missing_sites", &Master::missing_sites)
+    .method("missing_samples", &Master::missing_samples)
+    .method("missing", &Master::missing)
+    .method("sites", &Master::sites)
+    .method("chromosomes", &Master::chromosomes)
+    .method("samples", &Master::samples)
+    ;
+}

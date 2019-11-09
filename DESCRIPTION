@@ -1,0 +1,14 @@
+Package: haplodiplo
+Title: ANGSD-like Analyses for Haplodiploids
+Version: 0.1
+Date: 2019-08-08
+Author: person("Nathaniel S.", "Pope", email = "nspope@utexas.edu", role = c("aut", "cre"))
+Description: blah blah
+License: MIT
+Depends: R (>= 3.4.0)
+LinkingTo: Rcpp, RcppArmadillo, RcppParallel
+Imports: Rcpp, RcppArmadillo, RcppParallel, Matrix
+SystemRequirements: C++11
+Maintainer: Nathaniel S. Pope <nspope@utexas.edu>
+NeedsCompilation: yes
+Packaged: 2019-09-20 19:55:38 UTC; nspope
