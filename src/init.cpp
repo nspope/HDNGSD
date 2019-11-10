@@ -68,6 +68,34 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// theta
+arma::mat theta(const arma::sp_mat saf, const arma::mat sfs);
+RcppExport SEXP _haplodiplo_theta(SEXP safSEXP, SEXP sfsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::sp_mat >::type saf(safSEXP);
+    Rcpp::traits::input_parameter< const arma::mat >::type sfs(sfsSEXP);
+    rcpp_result_gen = Rcpp::wrap(theta(saf, sfs));
+    return rcpp_result_gen;
+END_RCPP
+}
+
+// slider
+arma::mat slider(arma::mat inp, arma::uvec coord, const unsigned window, const unsigned step);
+RcppExport SEXP _haplodiplo_slider(SEXP inpSEXP, SEXP coordSEXP, SEXP windowSEXP, SEXP stepSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< arma::mat >::type inp(inpSEXP);
+    Rcpp::traits::input_parameter< arma::uvec >::type coord(coordSEXP);
+    Rcpp::traits::input_parameter< const unsigned >::type window(windowSEXP);
+    Rcpp::traits::input_parameter< const unsigned >::type step(stepSEXP);
+    rcpp_result_gen = Rcpp::wrap(slider(inp, coord, window, step));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 RcppExport SEXP _rcpp_module_boot_Haplodiplo();
 
 static const R_CallMethodDef CallEntries[] = {
@@ -75,6 +103,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_haplodiplo_sfs2d", (DL_FUNC) &_haplodiplo_sfs2d, 5},
     {"_haplodiplo_sfs3d", (DL_FUNC) &_haplodiplo_sfs3d, 6},
     {"_haplodiplo_FST", (DL_FUNC) &_haplodiplo_FST, 3},
+    {"_haplodiplo_theta", (DL_FUNC) &_haplodiplo_theta, 2},
+    {"_haplodiplo_slider", (DL_FUNC) &_haplodiplo_slider, 4},
     {"_rcpp_module_boot_Haplodiplo", (DL_FUNC) &_rcpp_module_boot_Haplodiplo, 0},
     {NULL, NULL, 0}
 };

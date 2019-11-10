@@ -17,3 +17,11 @@ FST <- function(saf0, saf1, sfs) {
     .Call(`_haplodiplo_FST`, saf0, saf1, sfs)
 }
 
+theta <- function(saf, sfs) {
+    .Call(`_haplodiplo_theta`, saf, sfs)
+}
+
+slider <- function(inp, coord, window, step) {
+    .Call(`_haplodiplo_slider`, inp, coord, window, step)
+}
+

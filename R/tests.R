@@ -188,12 +188,15 @@ tests <- function()
   sfs3d(saf0, saf0, saf0, block, 0, TRUE)
 
   # Fst
+  n_blocks <- 20
+  block <- rep(0:19, each=ceiling(Hd$sites()/n_blocks))[1:Hd$sites()]
   saf0 <- Hd$saf(0:(Hd$sites()-1), 0:6)
   saf1 <- Hd$saf(0:(Hd$sites()-1), 6:12)
   myunfold <- sfs2d(saf0, saf1, block, 0, FALSE)
   myfold <- sfs2d(saf0, saf1, block, 0, TRUE)
-  head(FST(saf0, saf1, myunfold))
-  head(FST(saf0, saf1, myfold))
+  whoa = FST(saf0, saf1, myunfold[,,1])
+  head(FST(saf0, saf1, myfold[,,1]))
+  sum(whoa[,1])/sum(whoa[,2])
 
 
   # SNP calling

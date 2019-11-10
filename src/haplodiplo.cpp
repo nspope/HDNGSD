@@ -3389,3 +3389,204 @@ arma::mat FST (const arma::sp_mat saf0, const arma::sp_mat saf1, const arma::mat
 
   return estimate.fst;
 }
+
+// Theta
+
+struct Theta : public RcppParallel::Worker
+{
+  const arma::sp_mat &saf; // these must be exponentiated!
+
+  arma::vec fsfs, segregating, watterson, pairwise;
+  arma::mat theta;
+
+  const std::array<arma::uvec,3> folder;
+
+  private:
+  arma::mat &rtheta;
+  arma::vec buffer;
+
+  public:
+
+  Theta (const arma::sp_mat& saf, const arma::vec& sfs)
+    : saf (saf)
+    , fsfs (sfs)
+    , segregating (arma::size(fsfs), arma::fill::zeros)
+    , watterson (arma::size(fsfs), arma::fill::zeros)
+    , pairwise (arma::size(fsfs), arma::fill::zeros)
+    , theta (saf.n_cols, 3)
+    , folder (fold_mapper(fsfs, segregating, watterson, pairwise))
+    // references for workers
+    , rtheta (theta)
+    // temporaries
+    , buffer (arma::size(fsfs))
+  {
+    if (saf.n_rows != fsfs.n_elem)
+      Rcpp::stop("[Theta] Dimension mismatch"); 
+    if (saf.min() < 0. || fsfs.min() < 0.)
+      Rcpp::stop("[Theta] SAF/SFS must be non-negative");
+
+    RcppParallel::parallelFor(0, theta.n_rows, *this);
+    //(*this)(0, fst.n_rows);
+  }
+  
+  Theta (const Theta& rhs, RcppParallel::Split)
+    : saf (rhs.saf)
+    , fsfs (rhs.fsfs)
+    , segregating (rhs.segregating)
+    , watterson (rhs.watterson)
+    , pairwise (rhs.pairwise)
+    , theta (0, 0) //don't allocate
+    , folder (rhs.folder)
+    // references for workers
+    , rtheta (rhs.rtheta)
+    // temporaries
+    , buffer (arma::size(fsfs))
+  {}
+
+  std::array<arma::uvec,3> fold_mapper (arma::vec& sfs, arma::vec& seg, arma::vec& wat, arma::vec& pairs)
+  {
+    // -generate indices mapping SFS entries onto folded spectrum
+    // -pre calculate thetas
+    // -fold input SFS
+
+    const bool fold = true;
+
+    std::array<arma::uvec,3> f = 
+    {
+      arma::zeros<arma::uvec> (arma::size(sfs)), // remapped indices
+       arma::ones<arma::uvec> (arma::size(sfs)), // weights
+       arma::ones<arma::uvec> (arma::size(sfs)), // is zero or not
+    };
+
+    //double a1 = arma::accu(1./arma::regspace(1.,double(sfs.n_elem-1))),
+    //       a2 = arma::accu(1./arma::pow(arma::regspace(1.,double(sfs.n_elem-1)),2)),
+    //       b1 = double(sfs.n_elem + 1)/(3. * double(sfs.n_elem - 1)),
+    //       b2 = 2.*double(sfs.n_elem*sfs.n_elem + sfs.n_elem + 3)/double(9 * sfs.n_elem * (sfs.n_elem - 1)),
+    //       c1 = b1 - 1/a1,
+    //       c2 = b2 - double(sfs.n_elem+2)/(a1*double(sfs.n_elem)) + a2/(a1*a1),
+    //       e1 = c1/a1,
+    //       e2 = c2/(a1*a1 + a2);
+    //    seg == 0 ? 0. : pi - watterson / sqrt(e1*seg + e2*seg*(seg-1)); // is this additive? no it is not.
+    
+    double a1 = arma::accu(1./arma::regspace(1.,double(sfs.n_elem-1)));
+
+    for (unsigned s = 0; s < sfs.n_elem; ++s)
+    {
+      if (fold && 2*s > sfs.n_elem-1)
+      {
+        f[0].at(s) = sfs.n_elem-s-1;
+        f[2].at(s) = 0;
+      } 
+      else
+      {
+        f[0].at(s) = s;
+        if (fold && 2*s == sfs.n_elem-1)
+          f[1].at(s) = 2;
+
+        seg.at(s) = s > 0 && s < sfs.n_elem ? 1. : 0.;
+        wat.at(s) = s > 0 && s < sfs.n_elem ? 1./a1 : 0.;
+        pairs.at(s) = s * (sfs.n_elem - s);
+      }
+    }
+
+    // fold sfs 
+    sfs.replace(arma::datum::nan, 0.);
+    arma::vec sfs_fold (arma::size(sfs), arma::fill::zeros);
+    for (unsigned s = 0; s < sfs.n_elem; ++s)
+      sfs_fold.at(f[0].at(s)) += sfs.at(s);
+    sfs = sfs_fold;
+
+    return f;
+  }
+
+  arma::rowvec::fixed<3> theta_stats (const arma::mat& sfs, const unsigned i2)
+  {
+    arma::rowvec::fixed<3> out = arma::zeros<arma::rowvec>(3);
+
+    double den = 0.;
+
+    for (arma::sp_mat::const_col_iterator val0 = saf.begin_col(i2); 
+         val0 != saf.end_col(i2); ++val0)
+    {
+      buffer.at(val0.row()) = 
+        folder[1].at(val0.row()) *
+        sfs.at(folder[0].at(val0.row())) * 
+        (*val0);
+      den += buffer.at(val0.row());
+    }
+
+    // taking care not to iterate over entire SFS
+    for (arma::sp_mat::const_col_iterator val0 = saf.begin_col(i2); 
+         val0 != saf.end_col(i2); ++val0)
+    {
+      out.at(0) += 
+        segregating.at(folder[0].at(val0.row())) *
+        buffer.at(val0.row())/den;
+      out.at(1) += 
+        watterson.at(folder[0].at(val0.row())) *
+        buffer.at(val0.row())/den;
+      out.at(2) += 
+        pairwise.at(folder[0].at(val0.row())) *
+        buffer.at(val0.row())/den;
+    }
+
+    if (fabs(den) < arma::datum::eps) // SAF empty for this site
+      out.fill(arma::datum::nan);
+
+    return out;
+  }
+
+  void operator() (size_t start, size_t end)
+  {
+    for (size_t i = start; i != end; ++i)
+      theta.row(i) = theta_stats(fsfs, i);
+  }
+};
+
+// [[Rcpp::export()]]
+arma::mat theta (const arma::sp_mat saf, const arma::mat sfs)
+{
+  Theta estimate (saf, sfs);
+
+  return estimate.theta;
+}
+
+// [[Rcpp::export()]]
+arma::mat slider (arma::mat inp, arma::uvec coord, const unsigned window, const unsigned step)
+{
+  // sum over a sliding window. Pretty inefficient at the moment
+
+  arma::uvec order = arma::stable_sort_index(coord);
+
+  coord = coord.elem(order);
+  inp   = inp.elem(order);
+
+  const unsigned coord_max = coord.max(),
+                 coord_min = coord.min();
+
+  unsigned lower = coord_min,
+           upper = coord_min + window;
+
+  arma::mat out (3 + inp.n_cols, 0);
+
+  while (lower <= coord_max)
+  {
+    arma::uvec sites = arma::find(coord >= lower && coord < upper); // has to be more efficient way, only need min/max
+
+    arma::vec window (out.n_rows);
+
+    window.at(0) = double(lower);
+    window.at(1) = double(upper);
+    window.at(2) = double(sites.n_elem);
+    for (unsigned i=0; i<inp.n_cols; ++i)
+      window.at(2+i) = sites.n_elem ? arma::accu(inp.submat(sites.min(), i, sites.max(), i)) : arma::datum::nan;
+
+    out.insert_cols (out.n_cols, window); //this is very inefficient
+
+    lower += step;
+    upper += step;
+  }
+
+  return arma::trans(out);
+}
+
