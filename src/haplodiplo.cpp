@@ -151,29 +151,19 @@ struct GenotypeLikelihood
         } else {
           cnts.at(0,j,i) = cmat.at(major,j,i);
           cnts.at(1,j,i) = cmat.at(minor,j,i);
-
-          //DEPRECATED -- try to figure out major/minor from likelihoods alone
-          //arma::uvec counts = arma::sort(cmat.slice(i).col(j), "descend");
-          //if (like.at(2,j,i) > like.at(0,j,i))
-          //{
-          //  cnts.at(1,j,i) = counts[0];
-          //  cnts.at(0,j,i) = counts[1];
-          //}
-          //else
-          //{
-          //  cnts.at(1,j,i) = counts[1];
-          //  cnts.at(0,j,i) = counts[0];
-          //}
         }
 
         // transform to [0,1]
         like.slice(i).col(j)  =  arma::exp(like.slice(i).col(j));
         like.slice(i).col(j) /= arma::accu(like.slice(i).col(j)); 
+
+        // posterior with uniform prior
+        post.slice(i).col(j)  = arma::conv_to<arma::Col<float>>::from(handler(j,i));
       }
     }
 
-    // set genotype probabilities to NaN
-    post.fill(arma::datum::nan);
+    //// set genotype probabilities to NaN
+    //post.fill(arma::datum::nan);
 
     std::fprintf(stderr, "[GLReader] Read %lu sites across %u chromosomes in %u samples\n", sites, chromosomes, samples);
   }
@@ -195,7 +185,6 @@ struct GenotypeLikelihood
     missing.shed_cols(udrop);
     pos.shed_cols(udrop);
     sites -= udrop.n_elem;
-
 
     return filtered;
   }
@@ -224,7 +213,7 @@ struct GenotypeLikelihood
   size_t polarize (const arma::uvec& ref)
   {
     if (ref.n_elem != sites)
-      Rcpp::stop ("[GLReader::polarize] Reference sequence is wrong length");
+      Rcpp::stop ("[GenotypeLikelihood::polarize] Reference sequence is wrong length");
 
     size_t polarized = 0;
     for (size_t i=0; i<sites; ++i)
@@ -1193,8 +1182,95 @@ struct Saf : public RcppParallel::Worker
       vals.push_back(saf[k]);
     }
   }
+};
 
+struct CovarGP : public RcppParallel::Worker
+{
+  // expected number of variants per site/sample, using precomputed genotype probabilities
 
+  const GenotypeLikelihood &GL;
+  arma::vec global; 
+  arma::mat covar, zscore;
+
+  private:
+  arma::vec &rglobal;
+  arma::mat &rzscore;
+
+  public:
+  CovarGP (const GenotypeLikelihood& GL)
+    : GL (GL)
+    , global (GL.sites, arma::fill::zeros)
+    , zscore (GL.sites, GL.samples, arma::fill::zeros)
+    , covar (GL.samples, GL.samples, arma::fill::zeros)
+    // references used by workers 
+    , rglobal (global)
+    , rzscore (zscore)
+  {
+    RcppParallel::parallelReduce (0, GL.sites, *this);
+    //(*this)(0, GL.sites);
+  }
+
+  CovarGP (const CovarGP& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , global (0, arma::fill::zeros)
+    , zscore (0, 0, arma::fill::zeros)
+    , covar (arma::size(rhs.covar), arma::fill::zeros)
+    // references used by workers
+    , rglobal (rhs.rglobal)
+    , rzscore (rhs.rzscore)
+  {}
+
+  double Z (const unsigned i, const unsigned j)
+  {
+    double pi = rglobal.at(i),
+           e = double(GL.ploidy[j]) * pi,
+           g = GL.ploidy[j] == 1 ? GL.post.at(2,j,i) : GL.post.at(1,j,i) + 2.*GL.post.at(2,j,i),
+           v = sqrt(e * (1.-pi));
+
+    return (g-e)/v;
+  }
+
+  double variance (const unsigned i, const unsigned j)
+  {
+    double pi = rglobal.at(i),
+           e = double(GL.ploidy[j]) * pi,
+           v = e * (1.-pi),
+           g = GL.ploidy[j] == 1 ?
+                 std::pow(0.-e,2) * GL.post.at(0,j,i) + std::pow(1.-e,2) * GL.post.at(2,j,i) :
+                 std::pow(0.-e,2) * GL.post.at(0,j,i) + std::pow(1.-e,2) * GL.post.at(1,j,i) +
+                 std::pow(2.-e,2) * GL.post.at(2,j,i);
+    return g / v;
+  }
+
+  void operator() (const size_t start, const size_t end)
+  {
+    arma::vec var (GL.samples);
+    arma::mat outer (GL.samples, GL.samples);
+
+    for (size_t i=start; i!=end; ++i)
+    {
+      // global allele frequencies
+      rglobal.at(i) = 0.;
+      for (unsigned j=0; j<GL.samples; ++j)
+        rglobal.at(i) += GL.ploidy[j] == 1 ? GL.post.at(2,j,i) : GL.post.at(1,j,i) + 2.*GL.post.at(2,j,i);
+      rglobal.at(i) /= double(arma::accu(GL.ploidy));
+
+      // Z scores and covariance
+      for (unsigned j=0; j<GL.samples; ++j)
+      {
+        var.at(j)       = variance(i, j);
+        rzscore.at(i,j) = Z(i, j);
+      }
+      outer        = rzscore.row(i).t() * rzscore.row(i);
+      outer.diag() = var;
+      covar       += outer / double(GL.sites - 1);
+    }
+  }
+
+  void join (const CovarGP& rhs)
+  {
+    covar += rhs.covar;
+  }
 };
 
 struct Covar : public RcppParallel::Worker
@@ -1637,7 +1713,7 @@ struct SNPCaller : public RcppParallel::Worker
     //(*this)(0, site_index.n_elem);
 
     // filter
-    filtered = GL.retain_sites(site_index);
+    filtered = GL.retain_sites(site_index); //BIG TODO this is not working correctly
     fprintf(stderr, 
             "[SNPCaller] Filtered %lu sites that were monomorphic in %u samples across %u strata\n", 
             filtered, sample_index.n_elem, strata.max()+1);
@@ -1748,7 +1824,7 @@ struct SNPCaller : public RcppParallel::Worker
       SNPCaller::Henchman igor (saf[j], sfs[j]); // "what hump?"
 
       // total frequency
-      freq += igor.stats.col(0) * (sfs[j].n_elem - 1);
+      freq += igor.stats.col(0) * double(sfs[j].n_elem - 1);
       ns += sfs[j].n_elem - 1;
 
       // assuming independence, posterior probability that site is globally monomorphic is product across strata
@@ -1840,9 +1916,10 @@ struct SNPCaller : public RcppParallel::Worker
 
       fsfs.replace(arma::datum::nan, 0.);
       fsfs = 0.5 * (fsfs + arma::reverse(fsfs));
-      for (unsigned k=0; k<sfs.n_elem-1; ++k)
+      for (unsigned k=0; k<fsfs.n_elem; ++k)
         y.at(k) = k;
-      //  y.at(k) = std::min(k, sfs.n_elem-k-1); // this would estimate MAF
+      //  y.at(k) = std::min(k, fsfs.n_elem-k-1); // this would estimate MAF
+
 
       RcppParallel::parallelFor(0, stats.n_rows, *this);
       //(*this)(0, stats.n_rows);
@@ -2213,6 +2290,16 @@ struct Haplodiplo
         );
   }
 
+  Rcpp::List covarGP (void)
+  {
+    CovarGP cov (GL);
+    return Rcpp::List::create(
+        Rcpp::_["freq"] = cov.global,
+        Rcpp::_["covar"] = cov.covar,
+        Rcpp::_["zscore"] = cov.zscore
+        );
+  }
+
   Rcpp::List linkage (arma::umat sitepairs_index, arma::uvec sample_index)
   {
     arma::arma_rng::set_seed(1);
@@ -2414,6 +2501,7 @@ RCPP_MODULE(Haplodiplo) {
     .method("genofreq", &Haplodiplo::genofreq)
     .method("saf", &Haplodiplo::saf)
     .method("covar", &Haplodiplo::covar)
+    .method("covarGP", &Haplodiplo::covarGP)
     .method("paralogs", &Haplodiplo::paralogs)
     .method("poibin", &Haplodiplo::poibin)
     .method("linkage", &Haplodiplo::linkage)
@@ -2571,14 +2659,14 @@ struct SFS1d : public RcppParallel::Worker
       den += buffer.at(val0.row());
     }
 
+    if (fabs(den) < arma::datum::eps) // SAF empty for this site
+      return 0.;
+
     for (arma::sp_mat::const_col_iterator val0 = saf.begin_col(i2); 
          val0 != saf.end_col(i2); ++val0)
     {
       out.at(folder[0].at(val0.row())) += mult * buffer.at(val0.row())/den;
     }
-
-    if (fabs(den) < arma::datum::eps) // SAF empty for this site
-      return 0.;
 
     ns += mult; // track number of sites
 
@@ -2826,6 +2914,9 @@ struct SFS2d : public RcppParallel::Worker
       den += buffer.at(val0.row(), val1.row());
     }
 
+    if (fabs(den) < arma::datum::eps) // SAF empty for this site
+      return 0.;
+
     // taking care not to iterate over entire SFS
     for (arma::sp_mat::const_col_iterator val0 = saf0.begin_col(i2); 
          val0 != saf0.end_col(i2); ++val0)
@@ -2835,9 +2926,6 @@ struct SFS2d : public RcppParallel::Worker
       out.at(folder[0].at(val0.row(), val1.row())) += 
         mult * buffer.at(val0.row(), val1.row())/den;
     }
-
-    if (fabs(den) < arma::datum::eps) // SAF empty for this site
-      return 0.;
 
     ns += mult;
 
@@ -2946,7 +3034,6 @@ arma::cube sfs2d (const arma::sp_mat saf0, const arma::sp_mat saf1, const arma::
       arma::uvec resample = arma::randi<arma::uvec>(uniq_block.n_elem, arma::distr_param(0, uniq_block.n_elem-1));
       for (auto b : resample)
         multiplier[b] += 1;
-      //multiplier.t().raw_print("multiplier"); //DEBUG
     }
     SFS2d estimate (saf0, saf1, block, multiplier, fold);
     sfs.slice(boot) = estimate.sfs;
@@ -3091,6 +3178,9 @@ struct SFS3d : public RcppParallel::Worker
       den += buffer.at(val0.row(), val1.row(), val2.row());
     }
 
+    if (fabs(den) < arma::datum::eps) // SAF empty for this site
+      return 0.;
+
     // taking care not to iterate over entire SFS
     for (arma::sp_mat::const_col_iterator val0 = saf0.begin_col(i2); 
          val0 != saf0.end_col(i2); ++val0)
@@ -3102,9 +3192,6 @@ struct SFS3d : public RcppParallel::Worker
       out.at(folder[0].at(val0.row(), val1.row(), val2.row())) += 
         mult * buffer.at(val0.row(), val1.row(), val2.row())/den;
     }
-
-    if (fabs(den) < arma::datum::eps) // SAF empty for this site
-      return 0.;
 
     ns += mult;
 
@@ -3559,7 +3646,7 @@ arma::mat slider (arma::mat inp, arma::uvec coord, const unsigned window, const 
   arma::uvec order = arma::stable_sort_index(coord);
 
   coord = coord.elem(order);
-  inp   = inp.elem(order);
+  inp   = inp.rows(order);
 
   const unsigned coord_max = coord.max(),
                  coord_min = coord.min();
@@ -3579,7 +3666,7 @@ arma::mat slider (arma::mat inp, arma::uvec coord, const unsigned window, const 
     window.at(1) = double(upper);
     window.at(2) = double(sites.n_elem);
     for (unsigned i=0; i<inp.n_cols; ++i)
-      window.at(2+i) = sites.n_elem ? arma::accu(inp.submat(sites.min(), i, sites.max(), i)) : arma::datum::nan;
+      window.at(3+i) = sites.n_elem ? arma::accu(inp.submat(sites.min(), i, sites.max(), i)) : arma::datum::nan;
 
     out.insert_cols (out.n_cols, window); //this is very inefficient
 
@@ -3590,3 +3677,231 @@ arma::mat slider (arma::mat inp, arma::uvec coord, const unsigned window, const 
   return arma::trans(out);
 }
 
+// mutation matrix estimation from SAF
+
+//struct Mutation : public RcppParallel::Worker
+//{
+//  const arma::uvec &multiplier, &block;
+//  const arma::sp_mat &saf; // these must be exponentiated!
+//  double loglikelihood;
+//
+//  arma::mat::fixed<4,4> reversible, flux;
+//  arma::vec::fixed<4>   stationary;
+//
+//  private:
+//  arma::mat::fixed<4,4> upd; 
+//  arma::vec buffer;
+//  double loglik;
+//  size_t sites;
+//
+//  // settings
+//  bool   acceleration = true;        // use EM acceleration?
+//  double errtol = 1e-16;             // not using dynamic bounds
+//  double stepmax = 1., stepmin = 1.; // adaptive steplength
+//
+//  public:
+//
+//  Mutation (const arma::sp_mat& saf, const arma::uvec& block, const arma::uvec& multiplier)
+//    : saf (saf)
+//    , multiplier (multiplier)
+//    , block (block)
+//    // accumulated quantities
+//    , loglik (0.)
+//    , sites (0)
+//    // temporaries
+//    , buffer (saf.n_rows)
+//  {
+//    const unsigned maxiter = 1000;
+//
+//    if (saf.n_cols != block.n_elem || block.max() >= multiplier.n_elem)
+//      Rcpp::stop("[Mutation] Dimension mismatch");
+//    if (saf.min() < 0.)
+//      Rcpp::stop("[Mutation] SAF must be non-negative");
+//
+//    stationary.fill(0.25);
+//    reversible.fill(0.001);
+//    reversible.diag().fill(-0.003);
+//    flux.fill(0.);
+//
+//    bool converged;
+//    for (unsigned iter=0; iter<maxiter; ++iter)
+//    {
+//      converged = EMaccel();
+//      if (converged) 
+//        break;
+//      fprintf(stderr, "[Mutation]\titer %u, loglik = %f\n", iter, loglikelihood);
+//    }
+//
+//    if (!converged)
+//      Rcpp::warning("[Mutation] EM did not converge in maximum number of iterations");
+//  }
+//
+//  Mutation (const Mutation& rhs, RcppParallel::Split)
+//    : saf (rhs.saf)
+//    , multiplier (rhs.multiplier)
+//    , block (rhs.block)
+//    , stationary (rhs.stationary)
+//    , reversible (rhs.reversible)
+//    , flux (rhs.flux)
+//    // accumulated quantities
+//    , loglik (0.)
+//    , sites (0)
+//    // temporaries
+//    , buffer (saf.n_rows)
+//  {}
+//
+//  double likelihood (const arma::mat& C, const arma::mat& Phi, const arma::vec& pi, arma::mat& L, size_t& ns, const unsigned i2)
+//  {
+//    const unsigned mult = multiplier[block[i2]];
+//
+//    if (mult == 0)
+//      return 0.;
+//
+//    //arma::vec buffer (arma::size(inp), arma::fill::zeros);
+//
+//    double den = 0.;
+//
+//    unsigned a = ref.at(i2),
+//             b = alt.at(i2);
+//
+//    unsigned r = a < b ? 0 : 1; // reverse or no
+//
+//    // taking care not to iterate over entire SFS
+//    for (arma::sp_mat::const_col_iterator val0 = saf.begin_col(i2); 
+//         val0 != saf.end_col(i2); ++val0) // diagonal of C/Phi should be 0
+//    {
+//      unsigned y = val0.row();
+//      if (y == 0)
+//        buffer.at(y) = (*val0) * 
+//          (pi.at(a) - H * arma::accu(C.row(a)));
+//      else if (y == saf.n_rows)
+//        buffer.at(y) = (*val0) * 
+//          (pi.at(b) - H * arma::accu(C.row(b)));
+//      else 
+//        buffer.at(val0.row()) = (*val0) *
+//          (  C.at(a,b) * (1./double(y) + 1./double(saf.n_rows-y)) -
+//           Phi.at(a,b) * (1./double(y) - 1./double(saf.n_rows-y)) );
+//      den += buffer.at(y);
+//    }
+//
+//    if (fabs(den) < arma::datum::eps) // SAF empty for this site
+//      return 0.;
+//
+//    for (arma::sp_mat::const_col_iterator val0 = saf.begin_col(i2); 
+//         val0 != saf.end_col(i2); ++val0)
+//    {
+//      unsigned y = val0.row();
+//      if (y==0)
+//        L.diag().at(a) += mult * buffer.at(y)/den;
+//      else if (y==saf.n_rows)
+//        L.diag().at(b) += mult * buffer.at(y)/den;
+//      else
+//        L.at(std::min(a,b),std::max(a,b)) += mult * buffer.at(y)/den;
+//    }
+//
+//    ns += mult; // track number of sites
+//
+//    return mult * log(den);
+//  }
+//
+//  void operator() (size_t start, size_t end)
+//  {
+//    for (size_t i = start; i != end; ++i)
+//      loglik += likelihood (reversible, flux, stationary, upd, sites, i);
+//  }
+//
+//  void join (const Mutation& rhs)
+//  {
+//    loglik += rhs.loglik;
+//    upd += rhs.upd;
+//    sites += rhs.sites;
+//  }
+//
+//  double EM (void)
+//  {
+//    upd.zeros();
+//    loglik = 0.;
+//    sites = 0;
+//
+//    // project?
+//    
+//    RcppParallel::parallelReduce(0, block.n_elem, *this);
+//    //(*this)(0, multiplier.n_elem);
+//
+//    stationary = (0.5 * arma::sum(L, 0) + L.diag())/double(sites);
+//
+//    reversible = upd / (2 * double(sites) * H);
+//    reversible.diag().zeros();
+//    reversible = reversible + reversible.t();
+//
+//    //constraints on flux:
+//    // Phi_{iK} = -\sum_{j \neq i < K} Phi_{ij}
+//    //  ==> Phi_{AT} = -Phi_{AC} - Phi_{AG}
+//    //  ==> Phi_{CT} =  Phi_{AC} - Phi_{CG}
+//    //  ==> Phi_{GT} =  Phi_{AG} + Phi_{CG}
+//    // |Phi_{ij}| <= C_{ij}
+//    //can this be easily reparameterized to respect contraints?
+//    //  ==> -C_{AT} <= Phi_{AT} <= C_{AT} ... -C_{AT} <= -Phi_{AC} - Phi_{AG} <= C_{AT} 
+//    //                                    ... -C_{AT} + Phi_{AG} <= -Phi_{AC} <= C_
+//    //can I reparameterize in terms of Phi_{.T}?
+//    //  ==> Phi_{AC} =
+//    
+//    //flux = ...; // optimize somehow; remember constraints
+//    
+//    //likelihood is:
+//    //  
+//
+//    return loglik;
+//  }
+//
+//  bool EMaccel (void)
+//  {
+//    //TODO 
+//    const double tol = 1e-8;
+//    const double mstep = 4.;
+//
+//    arma::vec sfs0 = sfs;
+//    double    ll0  = loglikelihood;
+//
+//    loglikelihood = EM ();
+//    arma::vec sfs1 = sfs;
+//    double    ll1  = loglikelihood,
+//              sr2  = arma::accu(arma::pow(sfs1 - sfs0,2));
+//    if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
+//      return true;
+//
+//    if (!acceleration)
+//      return false;
+//
+//    loglikelihood  = EM ();
+//    arma::vec sfs2 = sfs;
+//    double    ll2  = loglikelihood,
+//              sq2  = arma::accu(arma::pow(sfs2 - sfs1,2));
+//    if (!arma::is_finite(sq2) || fabs(ll2 - ll1) < tol || sqrt(sq2) < tol)
+//      return true;
+//
+//    // accelerate
+//    double sv2   = arma::accu(arma::pow(sfs2 - 2*sfs1 + sfs0,2)),
+//           alpha = sqrt(sr2/sv2);
+//    alpha = std::max(stepmin, std::min(stepmax, alpha));
+//    sfs   = sfs0 + 2.*alpha*(sfs1 - sfs0) + alpha*alpha*(sfs2 - 2*sfs1 + sfs0);
+//
+//    // project
+//    sfs  = arma::clamp(sfs, errtol, 1.-errtol); 
+//    sfs %= arma::conv_to<arma::vec>::from(folder[2]);
+//    sfs /= arma::accu(sfs);
+//
+//    // stabilize and reset if needed
+//    loglikelihood = EM ();
+//    if (!arma::is_finite(loglikelihood) || loglikelihood < ll2)
+//    {
+//      loglikelihood = ll2;
+//      sfs = sfs2;
+//    }
+//
+//    if (alpha == stepmax)
+//      stepmax *= mstep;
+//
+//    return false;
+//  }
+//};
