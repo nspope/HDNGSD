@@ -205,7 +205,7 @@ tests <- function()
 
   n_blocks <- 20
   block <- rep(0:19, each=ceiling(Hd$sites()/n_blocks))[1:Hd$sites()]
-  saf0 <- Hd$saf(0:(Hd$sites()-1), 0:6)
+  saf0 <- Hd$saf(1:Hd$sites()-1, 0:6)
   sfs_fold <- sfs1d(saf0, block, 0, TRUE)
   sfs_unfold <- sfs1d(saf0, block, 0, FALSE)
 
@@ -217,4 +217,156 @@ tests <- function()
   Hd$retain(0:2)
   Hd$genotypes(TRUE)
   Hd$genotypes(FALSE)
+
+  saf0 <- Hd$saf(1:Hd$sites()-1, 1:Hd$samples()-1)
+  sfs_fold <- sfs1d(saf0, block, 0, TRUE)
+  Hd$callsnps(1:Hd$samples()-1, rep(0,Hd$samples()), list(sfs_fold), 0, 0.01)
+
+}
+
+.test_shf <- function()
+{
+  library(haplodiplo)
+  library(Matrix)
+
+  # haplotype likelihood (haploid)
+  glf <- array(0, c(3,4,3))
+  glf[1,1,1] <- 1; glf[3,2,1] <- 1; glf[1,3,1] <- 1; glf[3,4,1] <- 1
+  glf[3,1,2] <- 1; glf[3,2,2] <- 1; glf[3,3,2] <- 1; glf[3,4,2] <- 1
+  glf[3,1,3] <- 1; glf[3,2,3] <- 1; glf[1,3,3] <- 1; glf[3,4,3] <- 1
+  counts <- array(0, c(4,4,3))
+  counts[1,1,1] <- 1; counts[2,2,1] <- 1; counts[1,3,1] <- 1; counts[2,4,1] <- 1
+  counts[2,1,2] <- 1; counts[2,2,2] <- 1; counts[2,3,2] <- 1; counts[2,4,2] <- 1
+  counts[2,1,3] <- 1; counts[2,2,3] <- 1; counts[1,3,3] <- 1; counts[2,4,3] <- 1
+  pos <- cbind(0, c(1,2,3), rep(0,3), rep(1,3))
+  Hd <- Haplodiplo$new(log(glf), counts, pos, rep(1,4))
+  Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
+
+  # diploid likelihood
+  glf <- array(0, c(3,4,3))
+  glf[1,1,1] <- 1; glf[3,2,1] <- 1; glf[1,3,1] <- 1; glf[2,4,1] <- 1 # aa AA aa aA
+  glf[3,1,2] <- 1; glf[3,2,2] <- 1; glf[3,3,2] <- 1; glf[2,4,2] <- 1 # BB BB BB bB
+  glf[3,1,3] <- 1; glf[2,2,3] <- 1; glf[1,3,3] <- 1; glf[3,4,3] <- 1 # CC cC cc CC
+  counts <- array(0, c(4,4,3))
+  counts[1,1,1] <- 2; counts[2,2,1] <- 2;   counts[1,3,1] <- 2; counts[1:2,4,1] <- 1
+  counts[2,1,2] <- 2; counts[2,2,2] <- 2;   counts[2,3,2] <- 2; counts[1:2,4,2] <- 1
+  counts[2,1,3] <- 2; counts[1:2,2,3] <- 1; counts[1,3,3] <- 2; counts[2,4,3] <- 2
+  pos <- cbind(0, c(1,2,3), rep(0,3), rep(1,3))
+  Hd <- Haplodiplo$new(log(glf), counts, pos, rep(2,4))
+  Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
+
+  # haplodiploid likelihood
+  glf <- array(0, c(3,4,3))
+  glf[1,1,1] <- 1; glf[3,2,1] <- 1; glf[1,3,1] <- 1; glf[2,4,1] <- 1 # a AA aa aA
+  glf[3,1,2] <- 1; glf[3,2,2] <- 1; glf[3,3,2] <- 1; glf[2,4,2] <- 1 # B BB BB bB
+  glf[3,1,3] <- 1; glf[2,2,3] <- 1; glf[1,3,3] <- 1; glf[3,4,3] <- 1 # C cC cc CC
+  counts <- array(0, c(4,4,3))
+  counts[1,1,1] <- 1; counts[2,2,1] <- 2;   counts[1,3,1] <- 2; counts[1:2,4,1] <- 1
+  counts[2,1,2] <- 1; counts[2,2,2] <- 2;   counts[2,3,2] <- 2; counts[1:2,4,2] <- 1
+  counts[2,1,3] <- 1; counts[1:2,2,3] <- 1; counts[1,3,3] <- 2; counts[2,4,3] <- 2
+  pos <- cbind(0, c(1,2,3), rep(0,3), rep(1,3))
+  Hd <- Haplodiplo$new(log(glf), counts, pos, c(1,rep(2,3)))
+  Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
+
+  # haplotype likelihood (haploid, missing data)
+  glf <- array(0, c(3,4,3))
+  glf[1:3,1,1] <- 1/3; glf[3,2,1] <- 1; glf[1,3,1] <- 1; glf[3,4,1] <- 1 # N A a A
+  glf[1:3,1,2] <- 1; glf[3,2,2] <- 1; glf[3,3,2] <- 1; glf[3,4,2] <- 1   # N B B B
+  glf[3,1,3] <- 1; glf[3,2,3] <- 1; glf[1,3,3] <- 1; glf[3,4,3] <- 1     # C C c C
+  counts <- array(0, c(4,4,3))
+  counts[1,1,1] <- 0; counts[2,2,1] <- 1; counts[1,3,1] <- 1; counts[2,4,1] <- 1
+  counts[2,1,2] <- 0; counts[2,2,2] <- 1; counts[2,3,2] <- 1; counts[2,4,2] <- 1
+  counts[2,1,3] <- 0; counts[2,2,3] <- 1; counts[1,3,3] <- 1; counts[2,4,3] <- 1
+  pos <- cbind(0, c(1,2,3), rep(0,3), rep(1,3))
+  Hd <- Haplodiplo$new(log(glf), counts, pos, rep(1,4))
+  Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
+}
+
+.test_hfs1d <- function()
+{
+  library(haplodiplo)
+  library(Matrix)
+  # haplotype likelihood (haploid, no missing data)
+  set.seed(1)
+  nsite <- 200
+  glf <- array(0, c(3,9,nsite))
+  counts <- array(0, c(4,9,nsite))
+  for (i in 1:nsite)
+  {
+#    for (j in 1:3)
+#    {
+#      k <- sample(1:3, 1)
+#      glf[k,j,i] <- 1
+#      if (k == 1)
+#        counts[1,j,i] <- 2
+#      if (k == 2)
+#        counts[1:2,j,i] <- 1
+#      if (k == 3)
+#        counts[2,j,i] <- 2
+#    }
+    for (j in 1:9)
+    {
+      k <- sample(c(1,3), 1)
+      glf[k,j,i] <- 1
+      if (k == 1)
+        counts[1,j,i] <- 1
+      if (k == 3)
+        counts[2,j,i] <- 1
+    }
+  }
+  pos <- cbind(0, 1:nsite, rep(0,nsite), rep(1,nsite))
+  Hd <- Haplodiplo$new(log(glf), counts, pos, rep(1,9))
+  pairs <- t(combn(0:99,2))
+  shf1 <- Hd$shf(pairs, 0:8)
+  block <- rep(0,nrow(pairs))
+  hfs1 <- hfs1d(shf1$SHF, shf1$config, block, 0, max(shf1$config))
+  hfs2 <- hfs1d(shf1$SHF, shf1$config, block, 0, 4)
+  proj <- matrix(0, length(hfs2[[1]]), length(hfs1[[1]]))
+  for (i in 1:length(hfs2[[1]])) for(j in 1:length(hfs1[[1]]))
+    proj[i,j] <- extraDistr::dmvhyper(
+      c(4-sum(hfs2[[2]][,i]),hfs2[[2]][,i]),
+      c(max(shf1$config)-sum(hfs1[[2]][,j]),hfs1[[2]][,j]),
+      4)
+
+  # because each haplotype is selected uniformly at random
+  # the number of counts per bin should follow multinomial sampling probabilities
+  mcoef1 <- rep(NA, length(hfs1[[1]]))
+  for (i in 1:length(hfs1[[1]]))
+    mcoef1[i] <- multicool::multinom(c(max(shf1$config)-sum(hfs1[[2]][,i]),hfs1[[2]][,i]), counts=TRUE)
+  plot(mcoef1/sum(mcoef1), hfs1[[1]]); abline(0,1)#this works
+
+  mcoef2 <- rep(NA, length(hfs2[[1]]))
+  for (i in 1:length(hfs2[[1]]))
+    mcoef2[i] <- multicool::multinom(c(4-sum(hfs2[[2]][,i]),hfs2[[2]][,i]), counts=TRUE)
+  plot(mcoef2/sum(mcoef2), hfs2[[1]]); abline(0,1)#this doesn't
+  plot(mcoef2/sum(mcoef2), proj %*% hfs1[[1]]); abline(0,1)#but this does
+
+  #how about...
+  yow <- as(proj %*% shf1[[1]], "dgCMatrix")
+  hfs2.2 <- hfs1d(yow, hfs2$config, block, 0, 4)
+  plot(mcoef2/sum(mcoef2), hfs2.2[[1]])
+  #nope
+
+  EMstep <- function(par) { rowMeans(apply(yow, 2, function(x) x*par/sum(x*par))) }
+  plot(mcoef2/sum(mcoef2), EMstep(EMstep(EMstep(EMstep(EMstep(rep(1,length(hfs2.2[[1]]))))))))
+  #nope
+
+  #what do we have
+  #the SHF is p(X|G) p(G|a)
+  #to project... we have to ask, what is p(a|a_proj)
+  #... arg. we know that:
+  #p(a_proj|a) = hypergeometric probability
+  #p(a|a_proj) = p(a_proj|a) p(a)/sum p(a_proj|a) p(a)
+  EMstep2 <- function(par) { 
+    #rowMeans(apply(apply(proj, 2, function(x) x*par/sum(x*par)) %*% shf1[[1]], 2, function(z) z/sum(z)))
+    rowMeans(apply(t(apply(proj, 1, function(x) x/sum(x))) %*% shf1[[1]], 2, function(z) (z*par)/sum(z*par)))
+  }
+  plot(mcoef2/sum(mcoef2), EMstep2(EMstep2(EMstep2(EMstep2(EMstep2(rep(1,length(hfs2.2[[1]]))))))))
+
+  yow2 <- as(apply(proj, 2, function(x) (x/mcoef2)/sum(x/mcoef2)) %*% shf1[[1]], "dgCMatrix")
+  hfs2.3 <- hfs1d(yow2, hfs2$config, block, 0, 4)
+
+  # I think we just have to project after the fact, which totally blows.
+
+
 }

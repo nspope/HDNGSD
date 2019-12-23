@@ -25,3 +25,7 @@ slider <- function(inp, coord, window, step) {
     .Call(`_haplodiplo_slider`, inp, coord, window, step)
 }
 
+hfs1d <- function(shf, cfg, block, num_boot, proj) {
+    .Call(`_haplodiplo_hfs1d`, shf, cfg, block, num_boot, proj)
+}
+

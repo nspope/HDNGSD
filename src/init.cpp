@@ -96,6 +96,22 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// hfs1d
+Rcpp::List hfs1d(const arma::sp_mat shf, const arma::umat cfg, const arma::uvec block, const unsigned num_boot, const unsigned proj);
+RcppExport SEXP _haplodiplo_hfs1d(SEXP shfSEXP, SEXP cfgSEXP, SEXP blockSEXP, SEXP num_bootSEXP, SEXP projSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::sp_mat >::type shf(shfSEXP);
+    Rcpp::traits::input_parameter< const arma::umat >::type cfg(cfgSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec >::type block(blockSEXP);
+    Rcpp::traits::input_parameter< const unsigned >::type num_boot(num_bootSEXP);
+    Rcpp::traits::input_parameter< const unsigned >::type proj(projSEXP);
+    rcpp_result_gen = Rcpp::wrap(hfs1d(shf, cfg, block, num_boot, proj));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 RcppExport SEXP _rcpp_module_boot_Haplodiplo();
 
 static const R_CallMethodDef CallEntries[] = {
@@ -105,6 +121,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_haplodiplo_FST", (DL_FUNC) &_haplodiplo_FST, 3},
     {"_haplodiplo_theta", (DL_FUNC) &_haplodiplo_theta, 2},
     {"_haplodiplo_slider", (DL_FUNC) &_haplodiplo_slider, 4},
+    {"_haplodiplo_hfs1d", (DL_FUNC) &_haplodiplo_hfs1d, 5},
     {"_rcpp_module_boot_Haplodiplo", (DL_FUNC) &_rcpp_module_boot_Haplodiplo, 0},
     {NULL, NULL, 0}
 };
