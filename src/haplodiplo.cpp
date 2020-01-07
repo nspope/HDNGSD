@@ -43,6 +43,43 @@ namespace utils
       out -= std::lgamma(v + 1);
     return exp(out);
   }
+
+  Rcpp::List haplotype_projection (const arma::umat cfg, const unsigned prj)
+  {
+    // generate a hypergeometric projection of a set of haplotype configurations onto
+    // a set of configurations of smaller cardinality
+
+    if (cfg.n_rows != 3)
+      Rcpp::stop("[haplotype_projection] Each haplotype configuration (column) must have 3 entries");
+    if (prj < 1 || prj > cfg.max()) 
+      Rcpp::stop("[haplotype_projection] Projection size must be positive and less than the number of chromosomes");
+
+    const double errtol = std::pow(10., -9);
+
+    // generate new configuration
+    auto config = utils::all_haplotype_configurations(prj);
+
+    // loop over old configuration; for each entry in new configuration, get hypergeometric probability
+    unsigned n = cfg.max();
+    arma::mat proj (config.n_cols, cfg.n_cols);
+
+    for (unsigned c1 = 0; c1 < cfg.n_cols; ++c1)
+      for (unsigned c2 = 0; c2 < config.n_cols; ++c2)
+        proj.at(c2, c1) = exp(
+            R::lchoose(n-arma::accu(cfg.col(c1)), prj-arma::accu(config.col(c2))) + 
+            R::lchoose(cfg.at(0,c1), config.at(0,c2)) + 
+            R::lchoose(cfg.at(1,c1), config.at(1,c2)) + 
+            R::lchoose(cfg.at(2,c1), config.at(2,c2)) - 
+            R::lchoose(n, prj)); // multivariate hypergeometric pmf
+
+    // sparsify projection matrix
+    proj.clean(errtol);
+    proj.each_col([](arma::vec& x){ return x/arma::accu(x); }); //normalize
+
+    return Rcpp::List::create(
+        Rcpp::_["proj"] = arma::sp_mat(proj),
+        Rcpp::_["config"] = config);
+  }
 }
 
 struct GenotypeLikelihood
@@ -3928,11 +3965,58 @@ arma::mat slider (arma::mat inp, arma::uvec coord, const unsigned window, const 
   return arma::trans(out);
 }
 
-// Haplotype frequency spectrum
+// Haplotype frequency spectrum and Robertson-Hill basis
+
+// quantities from RHB that are needed:
+//
+// Projection: 1pop to 2chr
+// D_i       = E[p_AB p_ab - p_Ab p_aB]
+//
+// Projection: 1pop to 4chr
+// D_i^2     = E[p_AB^2 p_ab^2 - 2 p_AB p_Ab p_aB p_ab + p_Ab^2 p_aB^2]
+//
+// Projection: 2pop to 2x2chr
+// D_i D_j   = E[p_AB p_ab q_AB q_ab - p_AB p_ab q_Ab q_aB - p_Ab p_aB q_AB q_ab + p_Ab p_aB q_Ab q_aB]
+//
+// Projection: 1pop to 2,3,4chr
+// D_i z_ii  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab) (1 - 2 p_AB - 2 p_aB) ] =
+//             E[ (p_AB p_ab - p_Ab p_aB) (2 p_AB + 2 p_ab - 4 (p_AB p_ab - p_Ab p_aB) - 1) ] =
+//             E[2 p_AB^2 p_ab + 2 p_AB p_ab^2 - 2 p_AB p_Ab p_aB - 2 p_ab p_Ab p_aB - 4 D_i^2 - D_i]
+//
+// Projection: 2pop to 2,3x1
+// D_i z_ij  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab) (1 - 2 q_AB - 2 q_aB) ] =
+//             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab - 2 q_AB + 4 p_AB q_AB + 4 p_Ab q_AB - 2 q_aB + 4 p_AB q_aB + 4 p_Ab q_aB)] =
+//             D_i + 
+//             - 2 p_AB^2 p_ab + 2 p_AB p_Ab p_aB - 2 p_Ab p_AB p_ab + 2 p_Ab^2 p_aB 
+//             - 2 q_AB p_AB p_ab + 2 q_AB p_Ab p_aB - 2 q_aB p_AB p_ab + 2 q_aB p_Ab p_aB 
+//             + 4 p_AB^2 q_AB p_ab - 4 p_AB q_AB p_Ab p_aB + 4 p_Ab q_AB p_AB p_ab - 4 p_Ab^2 q_AB p_aB + 4 p_AB^2 q_aB p_ab - 4 p_AB q_aB p_Ab p_aB + 4 p_Ab q_aB p_AB p_ab - 4 p_Ab^2 q_aB p_aB
+//              
+// Projection: 3pop to 2x1x1
+// D_i z_jk  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab) (1 - 2 r_AB - 2 r_aB) ] =
+//             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab - 2 r_AB - 2 r_aB + 4 q_AB r_AB + 4 q_Ab r_AB + 4 q_AB r_aB + 4 q_Ab r_aB) ] =    
+//             D_i +
+//             - 2 p_AB p_ab q_AB + 2 p_Ab p_aB q_AB - 2 p_AB p_ab q_Ab + 2 p_Ab p_aB q_Ab 
+//             - 2 p_AB p_ab r_AB + 2 p_Ab p_aB r_AB - 2 p_AB p_ab r_aB + 2 p_Ab p_aB r_aB
+//             + 4 q_AB r_AB p_AB p_ab - 4 q_AB r_AB p_Ab p_aB + 4 q_Ab r_AB p_AB p_ab - 4 q_Ab r_AB p_Ab p_aB + 4 q_AB r_aB p_AB p_ab - 4 q_AB r_aB p_Ab p_aB + 4 q_Ab r_aB p_AB p_ab - 4 q_Ab r_aB p_Ab p_aB
+//
+// TODO
+// pi_{iiii} =
+// pi_{iiij} =
+// pi_{iijk} =
+// pi_{ijkl} =
 
 struct HFS1d : public RcppParallel::Worker
 {
   // estimates a haplotype frequency spectrum 
+
+  // I initially attempted to estimate the projection directly. This doesn't work.
+  // So, we will invariably be working with very large matrices. Thus is it crucial
+  // to keep operations "sparse".
+
+  // The trick, however, is how to generalize to higher dimensional objects.
+  // I need to be able to generalize to 4-dimensional tensors. Options:
+  //   -internally use a "triplet-type" format, then convert to sptensor class for R
+  //   -try to keep things 2d max for HFS, and use special methods to get the other basis coefficients
   
   const arma::uvec &multiplier, &block;
   const arma::sp_mat &shf; 
@@ -3940,7 +4024,8 @@ struct HFS1d : public RcppParallel::Worker
   arma::umat configurations;
   const arma::sp_mat projection;
 
-  arma::vec hfs;
+  arma::sp_mat hfs;
+  const arma::sp_mat pattern; //the sparsity pattern
   double loglikelihood;
 
   private:
@@ -4042,37 +4127,30 @@ struct HFS1d : public RcppParallel::Worker
 
   double likelihood (const arma::vec& inp, arma::vec& out, size_t& ns, const unsigned i2)
   {
-    //TODO make it so we don't do elementwise muliplication
     const unsigned mult = multiplier[block[i2]];
 
     if (mult == 0)
       return 0.;
 
-    buffer.zeros();
+    den = 0.;
 
-    // apply projection (I suppose this could be applied once via matrix multiplication)
     for (arma::sp_mat::const_col_iterator val0 = shf.begin_col(i2); 
          val0 != shf.end_col(i2); ++val0)
     {
-      for (arma::sp_mat::const_col_iterator prj0 = projection.begin_col(val0.row()); 
-           prj0 != projection.end_col(val0.row()); ++prj0)
-      {
-        //TO NOT ITERATE OVER ENTIRE HFS
-        //tmp = (*prj0) * (*val0) * inp.at(prj0.row());
-        //buffer.at(prj0.row()) += tmp;
-        //den += tmp;
-        buffer.at(prj0.row()) += (*prj0) * (*val0);
-      }
+      buffer.at(val0.row()) = (*val0) * inp.at(val0.row());
+      den += buffer.at(val0.row());
     }
 
-    buffer %= inp;
-
-    double den = arma::accu(buffer);
     if (fabs(den) < arma::datum::eps) // SHF empty for this site
       return 0.;
 
-    out += mult * buffer/den;
-    ns  += mult;
+    for (arma::sp_mat::const_col_iterator val0 = shf.begin_col(i2); 
+         val0 != shf.end_col(i2); ++val0)
+    {
+      out.at(val0.row()) += mult * buffer.at(val0.row())/den;
+    }
+
+    ns += mult;
 
     return mult * log(den);
   }
@@ -4099,7 +4177,7 @@ struct HFS1d : public RcppParallel::Worker
     hfs /= arma::accu(hfs);
 
     RcppParallel::parallelReduce(0, block.n_elem, *this);
-    //(*this)(0, multiplier.n_elem);
+    //(*this)(0, block.n_elem);
 
     hfs = upd / double(sites);
 
