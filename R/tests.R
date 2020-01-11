@@ -282,91 +282,112 @@ tests <- function()
   Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
 }
 
-.test_hfs1d <- function()
+.simulate_glf <- function(seed=0, nsnp=1000, ploidy=c(1,2,1,2), pseg=0.1, perr=0.01,depth=10)
+{
+  set.seed(seed)
+
+  pder <- rbeta(nsnp, 1, 5)
+
+  glik <- function(cnt, err)
+    c(dbinom(cnt[1], sum(cnt), 1-err), dbinom(cnt[1], sum(cnt), 0.5), dbinom(cnt[1], sum(cnt), err))
+
+  tglf <- array(0, dim=c(3,length(ploidy),nsnp))
+  glf <- array(0, dim=c(3,length(ploidy),nsnp))
+  counts <- array(0, dim=c(4,length(ploidy),nsnp))
+  for(i in 1:nsnp)
+  {
+    if (runif(1) > pseg) #nonsegregating
+    {
+      for(j in 1:length(ploidy))
+      {
+        tglf[1,j,i] <- 1
+        counts[1:2,j,i] <- rpois(2,depth*c(1-perr,perr))
+        glf[,j,i] <- glik(counts[,j,i], perr)
+      }
+    }
+    else #nonsegregating
+    {
+      for(j in 1:length(ploidy))
+      {
+        if (ploidy[j]==2) #diploid
+        {
+          tglf[sample(1:3,1,prob=c((1-pder[i])^2,2*pder[i]*(1-pder[i]),pder[i]^2)),j,i] <- 1
+          if (tglf[1,j,i]) 
+            counts[1:2,j,i] <- rpois(2,depth*c(1-perr,perr))
+          else if (tglf[2,j,i]) #het
+            counts[1:2,j,i] <- rpois(2,depth*0.5)
+          else
+            counts[1:2,j,i] <- rpois(2,depth*c(perr,1-perr))
+          glf[,j,i] <- glik(counts[,j,i], perr)
+        } else { #haploid
+          tglf[sample(c(1,3),1,prob=c(1-pder[i],pder[i])),j,i] <- 1
+          if (tglf[1,j,i]) 
+            counts[1:2,j,i] <- rpois(2,depth*c(1-perr,perr))
+          else
+            counts[1:2,j,i] <- rpois(2,depth*c(perr,1-perr))
+          glf[,j,i] <- glik(counts[,j,i], perr)
+        }
+      }
+    }
+  }
+
+  return(list(tglf=tglf, glf=glf, counts=counts, ploidy=ploidy))
+}
+
+.test_shfwindow <- function()
 {
   library(haplodiplo)
   library(Matrix)
-  # haplotype likelihood (haploid, no missing data)
-  set.seed(1)
-  nsite <- 200
-  glf <- array(0, c(3,9,nsite))
-  counts <- array(0, c(4,9,nsite))
-  for (i in 1:nsite)
+
+  # SNPs that are:
+  #   close
+  #   far
+  #   invariant
+  #   on different chromosomes
+  # Samples split across demes
+
+  # so: generate SNPs that are close in window 1 (chr 1)
+  # so: generate SNPs that are close in window 2 (chr 1)
+  # so: generate SNPs that are close in window 3 (chr 2)
+  # keep recombination rate constant (test RecombinationMap struct elsewhere)
+
+  # high depth, haploid, no error
+  ploidy <- c(1,1,1,1,1,1)
+  w1 <- .simulate_glf (seed=1, ploidy=ploidy, perr=0., pseg=0.25, nsnp=1000, depth=100)
+  w2 <- .simulate_glf (seed=2, ploidy=ploidy, perr=0., pseg=0.25, nsnp=1000, depth=100)
+  w3 <- .simulate_glf (seed=2, ploidy=ploidy, perr=0., pseg=0.25, nsnp=1000, depth=100)
+  p1 <- cbind(0, 1:1000, 0, 1)
+  p2 <- cbind(0, 50001:51000, 0, 1)
+  p3 <- cbind(1, 1:1000, 0, 1)
+  glf <- array(c(w1$glf, w2$glf, w3$glf), c(3,6,3000))
+  counts <- array(c(w1$counts, w2$counts, w3$counts), c(4,6,3000))
+  pos <- rbind(p1,p2,p3)
+
+  Hd <- Haplodiplo$new(log(glf), counts, pos, ploidy)
+  rmap <- cbind(c(0,0,0,1,1,1), c(0,40000,80000,0,40000,80000), c(1.,1.,1.,1.,1.,1), c(0.0,0.04,0.08,0.0,0.04,0.08))
+  bins <- cbind(c(0.0),c(0.01)) #what if bin is empty; how does Shf struct do
+
+  #to check...count haplotypes in simulated data between w1 and w2 assuming a single deme
+  w1w2_1deme <- Hd$shfwindow(0:5, rmap, bins)
+  hfs1d(w1w2_1deme$SHF[[2]], w1w2_1deme$weights[[2]])
+
+  cglf_w1w2 <- array(0, c(7,7,7))
+  dimnames(cglf_w1w2) <- c("Ab", "aB", "AB")
+  for(k in 1:6)
   {
-#    for (j in 1:3)
-#    {
-#      k <- sample(1:3, 1)
-#      glf[k,j,i] <- 1
-#      if (k == 1)
-#        counts[1,j,i] <- 2
-#      if (k == 2)
-#        counts[1:2,j,i] <- 1
-#      if (k == 3)
-#        counts[2,j,i] <- 2
-#    }
-    for (j in 1:9)
-    {
-      k <- sample(c(1,3), 1)
-      glf[k,j,i] <- 1
-      if (k == 1)
-        counts[1,j,i] <- 1
-      if (k == 3)
-        counts[2,j,i] <- 1
-    }
+    bin <- c("Ab"=0, "aB"=0, "AB"=0)
+    for(i in 1:1000)
+      for(j in 1:1000)
+      {
+        if(w1$tglf[1,k,i] & w2$tglf[3,k,i])
+          bin["Ab"] = bin["Ab"] + 1
+        else if(w1$tglf[3,k,i] & w2$tglf[1,k,i])
+          bin["aB"] = bin["aB"] + 1
+        else if(w1$tglf[3,k,i] & w2$tglf[3,k,i])
+          bin["AB"] = bin["AB"] + 1
+      }
+    cglf[bin[1],bin[2],bin[3]] <- cglf[bin[1],bin[2],bin[3]] + 1
   }
-  pos <- cbind(0, 1:nsite, rep(0,nsite), rep(1,nsite))
-  Hd <- Haplodiplo$new(log(glf), counts, pos, rep(1,9))
-  pairs <- t(combn(0:99,2))
-  shf1 <- Hd$shf(pairs, 0:8)
-  block <- rep(0,nrow(pairs))
-  hfs1 <- hfs1d(shf1$SHF, shf1$config, block, 0, max(shf1$config))
-  hfs2 <- hfs1d(shf1$SHF, shf1$config, block, 0, 4)
-  proj <- matrix(0, length(hfs2[[1]]), length(hfs1[[1]]))
-  for (i in 1:length(hfs2[[1]])) for(j in 1:length(hfs1[[1]]))
-    proj[i,j] <- extraDistr::dmvhyper(
-      c(4-sum(hfs2[[2]][,i]),hfs2[[2]][,i]),
-      c(max(shf1$config)-sum(hfs1[[2]][,j]),hfs1[[2]][,j]),
-      4)
-
-  # because each haplotype is selected uniformly at random
-  # the number of counts per bin should follow multinomial sampling probabilities
-  mcoef1 <- rep(NA, length(hfs1[[1]]))
-  for (i in 1:length(hfs1[[1]]))
-    mcoef1[i] <- multicool::multinom(c(max(shf1$config)-sum(hfs1[[2]][,i]),hfs1[[2]][,i]), counts=TRUE)
-  plot(mcoef1/sum(mcoef1), hfs1[[1]]); abline(0,1)#this works
-
-  mcoef2 <- rep(NA, length(hfs2[[1]]))
-  for (i in 1:length(hfs2[[1]]))
-    mcoef2[i] <- multicool::multinom(c(4-sum(hfs2[[2]][,i]),hfs2[[2]][,i]), counts=TRUE)
-  plot(mcoef2/sum(mcoef2), hfs2[[1]]); abline(0,1)#this doesn't
-  plot(mcoef2/sum(mcoef2), proj %*% hfs1[[1]]); abline(0,1)#but this does
-
-  #how about...
-  yow <- as(proj %*% shf1[[1]], "dgCMatrix")
-  hfs2.2 <- hfs1d(yow, hfs2$config, block, 0, 4)
-  plot(mcoef2/sum(mcoef2), hfs2.2[[1]])
-  #nope
-
-  EMstep <- function(par) { rowMeans(apply(yow, 2, function(x) x*par/sum(x*par))) }
-  plot(mcoef2/sum(mcoef2), EMstep(EMstep(EMstep(EMstep(EMstep(rep(1,length(hfs2.2[[1]]))))))))
-  #nope
-
-  #what do we have
-  #the SHF is p(X|G) p(G|a)
-  #to project... we have to ask, what is p(a|a_proj)
-  #... arg. we know that:
-  #p(a_proj|a) = hypergeometric probability
-  #p(a|a_proj) = p(a_proj|a) p(a)/sum p(a_proj|a) p(a)
-  EMstep2 <- function(par) { 
-    #rowMeans(apply(apply(proj, 2, function(x) x*par/sum(x*par)) %*% shf1[[1]], 2, function(z) z/sum(z)))
-    rowMeans(apply(t(apply(proj, 1, function(x) x/sum(x))) %*% shf1[[1]], 2, function(z) (z*par)/sum(z*par)))
-  }
-  plot(mcoef2/sum(mcoef2), EMstep2(EMstep2(EMstep2(EMstep2(EMstep2(rep(1,length(hfs2.2[[1]]))))))))
-
-  yow2 <- as(apply(proj, 2, function(x) (x/mcoef2)/sum(x/mcoef2)) %*% shf1[[1]], "dgCMatrix")
-  hfs2.3 <- hfs1d(yow2, hfs2$config, block, 0, 4)
-
-  # I think we just have to project after the fact, which totally blows.
-
 
 }
+

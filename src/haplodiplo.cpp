@@ -19,6 +19,7 @@
 
 namespace utils 
 {
+
   arma::umat all_haplotype_configurations (const unsigned n)
   {
     // generate all haplotype configurations summing to n chromosomes,
@@ -80,6 +81,109 @@ namespace utils
         Rcpp::_["proj"] = arma::sp_mat(proj),
         Rcpp::_["config"] = config);
   }
+
+  Rcpp::List hfs1d_downproject (arma::vec hfs, arma::umat configuration, const unsigned projection)
+  {
+    if (hfs.n_elem != configuration.n_cols || configuration.n_rows != 3)
+      Rcpp::stop("[downproject_hfs1d] Dimension mismatch");
+    if (projection > configuration.max())
+      Rcpp::stop("[downproject_hfs1d] Size of projection must be less than current HFS");
+
+    Rcpp::List projector0 = utils::haplotype_projection(configuration, projection);
+    arma::sp_mat proj0    = projector0["proj"];
+    arma::umat   config0  = projector0["config"];
+
+    arma::vec hfsp (config0.n_cols, arma::fill::zeros);
+
+    for (unsigned i=0; i<hfs.n_elem; ++i)
+      for (arma::sp_mat::const_col_iterator val0 = proj0.begin_col(i); val0 != proj0.end_col(i); ++val0)
+        hfsp.at(val0.row()) += (*val0) * hfs.at(i);
+
+    std::vector<arma::umat> config = {config0};
+
+    return Rcpp::List::create(
+        Rcpp::_["hfs"] = hfsp,
+        Rcpp::_["config"] = config);
+  }
+
+  Rcpp::List hfs2d_downproject (arma::mat hfs, 
+                                arma::umat configuration0, 
+                                const unsigned projection0,
+                                arma::umat configuration1,
+                                const unsigned projection1)
+  {
+    if (hfs.n_rows != configuration0.n_cols || hfs.n_cols != configuration1.n_cols ||
+        configuration0.n_rows != 3          || configuration1.n_rows != 3          )
+      Rcpp::stop("[downproject_hfs2d] Dimension mismatch");
+    if (projection0 > configuration0.max() || projection1 > configuration1.max())
+      Rcpp::stop("[downproject_hfs2d] Size of projection must be less than current HFS");
+
+    Rcpp::List projector0 = utils::haplotype_projection(configuration0, projection0);
+    arma::sp_mat proj0    = projector0["proj"];
+    arma::umat   config0  = projector0["config"];
+
+    Rcpp::List projector1 = utils::haplotype_projection(configuration1, projection1);
+    arma::sp_mat proj1    = projector1["proj"];
+    arma::umat   config1  = projector1["config"];
+
+    arma::mat hfsp (config0.n_cols, config1.n_cols, arma::fill::zeros);
+
+    for (unsigned i=0; i<hfs.n_rows; ++i)
+      for (unsigned j=0; j<hfs.n_cols; ++j)
+        for (arma::sp_mat::const_col_iterator val0 = proj0.begin_col(i); val0 != proj0.end_col(i); ++val0)
+          for (arma::sp_mat::const_col_iterator val1 = proj1.begin_col(j); val1 != proj1.end_col(j); ++val1)
+            hfsp.at(val0.row(), val1.row()) += (*val0) * (*val1) * hfs.at(i,j);
+
+    std::vector<arma::umat> config = {config0, config1};
+
+    return Rcpp::List::create(
+        Rcpp::_["hfs"] = hfsp,
+        Rcpp::_["config"] = config);
+  }
+
+  Rcpp::List hfs3d_downproject (arma::cube hfs, 
+                                arma::umat configuration0, 
+                                const unsigned projection0,
+                                arma::umat configuration1,
+                                const unsigned projection1,
+                                arma::umat configuration2,
+                                const unsigned projection2)
+  {
+    if (hfs.n_rows != configuration0.n_cols || hfs.n_cols != configuration1.n_cols || hfs.n_slices != configuration2.n_cols ||
+        configuration0.n_rows != 3          || configuration1.n_rows != 3          || configuration2.n_rows != 3            )
+      Rcpp::stop("[downproject_hfs3d] Dimension mismatch");
+    if (projection0 > configuration0.max() || projection1 > configuration1.max() || projection2 > configuration2.max())
+      Rcpp::stop("[downproject_hfs3d] Size of projection must be less than current HFS");
+
+    Rcpp::List projector0 = utils::haplotype_projection(configuration0, projection0);
+    arma::sp_mat proj0    = projector0["proj"];
+    arma::umat   config0  = projector0["config"];
+
+    Rcpp::List projector1 = utils::haplotype_projection(configuration1, projection1);
+    arma::sp_mat proj1    = projector1["proj"];
+    arma::umat   config1  = projector1["config"];
+
+    Rcpp::List projector2 = utils::haplotype_projection(configuration2, projection2);
+    arma::sp_mat proj2    = projector2["proj"];
+    arma::umat   config2  = projector2["config"];
+
+    arma::cube hfsp (config0.n_cols, config1.n_cols, config2.n_cols, arma::fill::zeros);
+
+    for (unsigned i=0; i<hfs.n_rows; ++i)
+      for (unsigned j=0; j<hfs.n_cols; ++j)
+        for (unsigned k=0; k<hfs.n_slices; ++k)
+          for (arma::sp_mat::const_col_iterator val0 = proj0.begin_col(i); val0 != proj0.end_col(i); ++val0)
+            for (arma::sp_mat::const_col_iterator val1 = proj1.begin_col(j); val1 != proj1.end_col(j); ++val1)
+              for (arma::sp_mat::const_col_iterator val2 = proj2.begin_col(k); val2 != proj1.end_col(k); ++val2)
+                hfsp.at(val0.row(), val1.row(), val2.row()) += (*val0) * (*val1) * (*val2) * hfs.at(i,j,k);
+
+    std::vector<arma::umat> config = {config0, config1, config2};
+
+    return Rcpp::List::create(
+        Rcpp::_["hfs"] = hfsp,
+        Rcpp::_["config"] = config);
+  }
+
 }
 
 struct GenotypeLikelihood
@@ -1447,6 +1551,477 @@ struct Shf : public RcppParallel::Worker
       out.at(2,3) = p0.at(1) * p1.at(2); // aB.AB
       out.at(3,3) = p0.at(2) * p1.at(2); // AB.AB
     }
+    return out;
+  }
+};
+
+struct ShfInvariant : public RcppParallel::Worker
+{
+  // for a set of sites, calculate the SHF for a left- and right- invariant pairing
+  
+  const GenotypeLikelihood &GL;
+  const arma::uvec sample_index, site_index;
+  const unsigned chromosomes;
+
+  const arma::umat configurations;
+
+  arma::sp_mat lSHF, rSHF;
+
+  private:
+  const arma::uvec &rsample_index, &rsite_index;
+  std::vector<unsigned> rowindl, colindl, rowindr, colindr;
+  std::vector<double> valuesl, valuesr;
+  arma::uvec ptr;
+
+  public:
+  ShfInvariant (const GenotypeLikelihood& GL, const arma::uvec sites, const arma::uvec samples)
+    : GL (GL)
+    , sample_index (samples)
+    , site_index (sites)
+    , chromosomes (arma::accu(GL.ploidy.elem(sample_index)))
+    , configurations (utils::all_haplotype_configurations(chromosomes))
+    // references used by slaves
+    , rsample_index (sample_index)
+    , rsite_index (site_index)
+  {
+    if (site_index.max() > GL.sites)
+      Rcpp::stop("[ShfInvariant] invalid entries in site index");
+    if (sample_index.max() > GL.samples)
+      Rcpp::stop("[ShfInvariant] invalid entries in sample index");
+
+    //RcppParallel::parallelReduce(0, site_pair.n_cols, *this);
+    (*this)(0, site_index.n_elem);
+
+    // make sparse matrices
+    lSHF = arma::sp_mat(arma::join_vert(arma::urowvec(rowindl), arma::urowvec(colindl)), arma::vec(valuesl), configurations.n_cols, site_index.n_elem);
+    rSHF = arma::sp_mat(arma::join_vert(arma::urowvec(rowindr), arma::urowvec(colindr)), arma::vec(valuesr), configurations.n_cols, site_index.n_elem);
+  }
+
+  ShfInvariant (const ShfInvariant& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , chromosomes (rhs.chromosomes)
+    , configurations (rhs.configurations)
+    // don't allocate me
+    , sample_index (0, arma::fill::zeros)
+    , site_index (0, arma::fill::zeros)
+    // references used by slaves
+    , rsample_index (rhs.rsample_index)
+    , rsite_index (rhs.rsite_index)
+  {}
+
+  void operator() (const size_t start, const size_t end)
+  {
+    // starting points for each iteration
+    arma::uvec sum = arma::trans(arma::sum(configurations,0));
+    ptr = arma::zeros<arma::uvec>(chromosomes+1); 
+    for (unsigned i=0; i<=chromosomes; ++i)
+    {
+      arma::uvec tmp = arma::find(sum==i);
+      ptr[i] = tmp.at(0);
+    }
+    // heuristic for memory allocation, assuming average of 5 nonzero values per pair
+    rowindl.reserve((end-start+1)*5);
+    colindl.reserve((end-start+1)*5);
+    valuesl.reserve((end-start+1)*5);
+    rowindr.reserve((end-start+1)*5);
+    colindr.reserve((end-start+1)*5);
+    valuesr.reserve((end-start+1)*5);
+    for (size_t i=start; i!=end; ++i)
+    {
+      dyn_algo (i, rowindl, colindl, valuesl, true);
+      dyn_algo (i, rowindr, colindr, valuesr, false);
+    }
+  }
+
+  void join (const ShfInvariant& rhs)
+  {
+    valuesl.insert(valuesl.end(), 
+                  std::make_move_iterator(rhs.valuesl.begin()), 
+                  std::make_move_iterator(rhs.valuesl.end()));
+    rowindl.insert(rowindl.end(), 
+                  std::make_move_iterator(rhs.rowindl.begin()), 
+                  std::make_move_iterator(rhs.rowindl.end()));
+    colindl.insert(colindl.end(), 
+                  std::make_move_iterator(rhs.colindl.begin()), 
+                  std::make_move_iterator(rhs.colindl.end()));
+    valuesr.insert(valuesr.end(), 
+                  std::make_move_iterator(rhs.valuesr.begin()), 
+                  std::make_move_iterator(rhs.valuesr.end()));
+    rowindr.insert(rowindr.end(), 
+                  std::make_move_iterator(rhs.rowindr.begin()), 
+                  std::make_move_iterator(rhs.rowindr.end()));
+    colindr.insert(colindr.end(), 
+                  std::make_move_iterator(rhs.colindr.begin()), 
+                  std::make_move_iterator(rhs.colindr.end()));
+  }
+
+  void dyn_algo (const unsigned index, std::vector<unsigned>& rind, std::vector<unsigned>& cind, std::vector<double>& vals, const bool left)
+  {
+    // calculate coniguration likelihoods using dynamic programming algorithm
+    // "returns" a compressed sparse column format
+    
+    const double epsilon = std::pow(10., -9);
+
+    const unsigned site = rsite_index.at(0, index);
+
+    unsigned nchr = 0;
+    int i, j, k;
+
+    // initialize
+    arma::cube buffer (chromosomes+1, chromosomes+1, chromosomes+1, arma::fill::zeros);
+    buffer.at(0,0,0) = 1.;
+
+    // calculate
+    for (unsigned s=0; s<rsample_index.n_elem; ++s) {
+
+      const unsigned sample = rsample_index[s];
+
+      nchr += GL.ploidy[sample];
+
+      arma::vec p0, p1;
+      if (left) // hypothetical site to the left is invariant
+      {
+        p0 = arma::vec({1., 0., 0.}); 
+        p1 = GL.handler(sample, site);
+      } 
+      else // hypothetical site to the right is invariant
+      {
+        p0 = GL.handler(sample, site);
+        p1 = arma::vec({1., 0., 0.}); 
+      }
+
+      arma::mat lik = likelihood (p0, p1, GL.ploidy[sample]); // haplotype likelihoods
+
+      for (unsigned l=ptr[nchr]; l<configurations.n_cols; ++l)
+      {
+        i = configurations.at(0,l);
+        j = configurations.at(1,l);
+        k = configurations.at(2,l);
+        if (GL.ploidy[sample] == 1)
+        {
+          buffer.at(i,j,k) *= lik.at(0,0);
+          buffer.at(i,j,k) += i-1 < 0 ? 0. : buffer.at(i-1,j,k) * lik.at(1,1);
+          buffer.at(i,j,k) += j-1 < 0 ? 0. : buffer.at(i,j-1,k) * lik.at(2,2);
+          buffer.at(i,j,k) += k-1 < 0 ? 0. : buffer.at(i,j,k-1) * lik.at(3,3);
+        } 
+        else if (GL.ploidy[sample] == 2)
+        {
+          buffer.at(i,j,k) *= lik.at(0,0);
+          buffer.at(i,j,k) += i-2 < 0 ? 0. : buffer.at(i-2,j,k) * lik.at(1,1);
+          buffer.at(i,j,k) += j-2 < 0 ? 0. : buffer.at(i,j-2,k) * lik.at(2,2);
+          buffer.at(i,j,k) += k-2 < 0 ? 0. : buffer.at(i,j,k-2) * lik.at(3,3);
+          buffer.at(i,j,k) += i-1 < 0 ? 0. : buffer.at(i-1,j,k) * (lik.at(0,1) + lik.at(1,0));
+          buffer.at(i,j,k) += j-1 < 0 ? 0. : buffer.at(i,j-1,k) * (lik.at(0,2) + lik.at(2,0));
+          buffer.at(i,j,k) += k-1 < 0 ? 0. : buffer.at(i,j,k-1) * (lik.at(0,3) + lik.at(3,0));
+          buffer.at(i,j,k) += i-1 < 0 || j-1 < 0 ? 0. : buffer.at(i-1,j-1,k) * (lik.at(1,2) + lik.at(2,1));
+          buffer.at(i,j,k) += i-1 < 0 || k-1 < 0 ? 0. : buffer.at(i-1,j,k-1) * (lik.at(1,3) + lik.at(3,1));
+          buffer.at(i,j,k) += j-1 < 0 || k-1 < 0 ? 0. : buffer.at(i,j-1,k-1) * (lik.at(2,3) + lik.at(3,2));
+        }
+      }
+    }
+
+    // transfer, sparsify, and store
+    arma::vec out (configurations.n_cols, arma::fill::zeros);
+    for (unsigned l=0; l<configurations.n_cols; ++l)
+    {
+      i = configurations.at(0,l);
+      j = configurations.at(1,l);
+      k = configurations.at(2,l);
+      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::uvec({chromosomes-i-j-k, i, j, k}));
+    }
+    out.clean(epsilon);
+    out /= arma::accu(out);
+
+    arma::uvec nz = arma::find(out);
+    for (unsigned l=0; l<nz.n_elem; ++l)
+    {
+      rind.push_back(nz[l]);
+      cind.push_back(index);
+      vals.push_back(out[nz[l]]);
+    }
+
+    return;
+  }
+
+  arma::mat likelihood (const arma::vec::fixed<3>& p0, const arma::vec::fixed<3>& p1, const unsigned ploidy)
+  {
+    // haplotype likelihoods from genotype likelihoods
+    
+    arma::mat::fixed<4,4> out;
+    if (ploidy == 1)
+    {
+      out.at(0,0) = p0.at(0) * p1.at(0); // ab
+      out.at(1,1) = p0.at(2) * p1.at(0); // Ab
+      out.at(2,2) = p0.at(0) * p1.at(2); // aB
+      out.at(3,3) = p0.at(2) * p1.at(2); // AB
+    }
+    else if (ploidy == 2)
+    {
+      out.at(0,0) = p0.at(0) * p1.at(0); // ab.ab
+      out.at(1,0) = p0.at(1) * p1.at(0); // Ab.ab
+      out.at(2,0) = p0.at(0) * p1.at(1); // aB.ab
+      out.at(3,0) = p0.at(1) * p1.at(1); // AB.ab
+      out.at(0,1) = p0.at(1) * p1.at(0); // ab.Ab
+      out.at(1,1) = p0.at(2) * p1.at(0); // Ab.Ab
+      out.at(2,1) = p0.at(1) * p1.at(1); // aB.Ab
+      out.at(3,1) = p0.at(2) * p1.at(1); // AB.Ab
+      out.at(0,2) = p0.at(0) * p1.at(1); // ab.aB
+      out.at(1,2) = p0.at(1) * p1.at(1); // Ab.aB
+      out.at(2,2) = p0.at(0) * p1.at(2); // aB.aB
+      out.at(3,2) = p0.at(1) * p1.at(2); // AB.aB
+      out.at(0,3) = p0.at(1) * p1.at(1); // ab.AB
+      out.at(1,3) = p0.at(2) * p1.at(1); // Ab.AB
+      out.at(2,3) = p0.at(1) * p1.at(2); // aB.AB
+      out.at(3,3) = p0.at(2) * p1.at(2); // AB.AB
+    }
+    return out;
+  }
+};
+
+// problem: if done separately per stratum, sites won't line up
+// solution: (a) do all strata in a single run
+//           (b) call snps using all samples in GL (easy)
+struct ShfWindow : public RcppParallel::Worker
+{
+  struct RecombinationMap
+  {
+    // recombination map from Hapmap format: 
+    //   chromosome
+    //   position (bp)
+    //   rate (cM/Mb)
+    //   position (cM)
+
+    arma::uvec chrom, begin, end;
+    arma::vec cM, rate;
+
+    RecombinationMap (arma::mat hapmap)
+      : chrom (hapmap.n_rows-1, arma::fill::zeros)
+        , begin (hapmap.n_rows-1, arma::fill::zeros)
+        , end (hapmap.n_rows-1, arma::fill::zeros)
+        , cM (hapmap.n_rows-1, arma::fill::zeros)
+        , rate (hapmap.n_rows-1, arma::fill::zeros)
+    {
+      if (hapmap.n_cols != 4)
+        Rcpp::stop("[RecombinationMap] Hapmap format has four columns");
+      if (hapmap.min() < 0.)
+        Rcpp::stop("[RecombinationMap] Invalid map");
+
+      arma::uvec chr = arma::conv_to<arma::uvec>::from(hapmap.col(0)),
+        pos = arma::conv_to<arma::uvec>::from(hapmap.col(1));
+      arma::vec  rat = hapmap.col(2),
+        cen = hapmap.col(3);
+
+      // sort by chromosome and then position
+      arma::uvec index = arma::regspace<arma::uvec>(0, hapmap.n_rows-1);
+      std::sort (index.begin(), index.end(), 
+          [&](int i, int j) { 
+          return chr[i]==chr[j] ? pos[i]<pos[j] : chr[i]<chr[j]; 
+          });
+      chr = chr.elem(index);
+      pos = pos.elem(index);
+      rat = rat.elem(index);
+      cen = cen.elem(index);
+
+      unsigned j = 0;
+      for (unsigned i=0; i<pos.n_elem-1; ++i)
+      {
+        if (chr.at(i) == chr.at(i+1))
+        {
+          chrom.at(j) = chr.at(i);
+          begin.at(j) = pos.at(i);
+          end.at(j)   = pos.at(i+1);
+          cM.at(j)    = cen.at(i);
+          rate.at(j)  = rat.at(i);
+          j++;
+        }
+      }
+      chrom = chrom.head(j);
+      begin = begin.head(j);
+      end = end.head(j);
+      cM = cM.head(j);
+      rate = rate.head(j);
+    }
+
+    arma::vec interpolate (const arma::umat& position) const
+    {
+      // given a set of positions and a piecewise constant recombination map (rows 0 & 1 of input)
+      // interpolate location from start of chromosome in centimorgans
+
+      auto chr = position.row(0);
+      auto pos = position.row(1);
+
+      arma::vec cM (pos.n_elem);
+      cM.fill(arma::datum::nan);
+
+      for (unsigned i=0; i<pos.n_elem; ++i)
+      {
+        arma::uvec j = arma::find(chrom == chr[i] && begin <= pos[i] && end > pos[i]);
+        if (j.n_elem == 1)
+          cM[i] = cM[j[0]] + (pos[i] - begin[j[0]]) * rate[j[0]] * 1.e-6;
+      }
+      return cM;
+    }
+  };
+
+  const GenotypeLikelihood& GL;
+
+  const arma::uvec sample_index;
+  const arma::mat bins; // "distance bins" (cM) in which to calculate SHF 
+  const RecombinationMap rmap;
+  const arma::vec  cM; // positions of sites in cM
+  const arma::uvec variant_index; // 1-based SNP id, 0 if invariant
+
+  // outputs
+  std::vector<arma::sp_mat> SHF;
+  std::vector<arma::uvec> weights;
+  std::vector<arma::umat> config;
+
+  private:
+  const arma::vec &rcM;
+  const arma::uvec &rvariant_index;
+  std::vector<arma::umat> variant; // indices of pairs of variant sites
+  std::vector<arma::uvec> left_invariant, right_invariant; // for each site, number of invariant sites to right/left
+  std::vector<unsigned> invariant; // number of invariant pairs
+
+  public:
+  ShfWindow (const GenotypeLikelihood& GL,
+             const arma::uvec samples,
+             const arma::mat  hapmap,   // each row is a breakpoint, cols are: chr, pos(bp), rate, pos(cM)
+             const arma::mat bin,       // start/end points of bins (cM)
+             double thresh)             // P-value to call SNP
+    : GL (GL)
+    , sample_index (samples)
+    , rmap (hapmap)
+    , bins (buffer_bins(bin))
+    , cM (rmap.interpolate(GL.pos))
+    , variant_index (call_variants(thresh))
+    // references for workers
+    , rvariant_index (variant_index)
+    , rcM (cM)
+  {
+    // determine indices of variant pairs, and number of left/right/dual- invariant pairs.
+    (*this)(0, GL.sites-1);
+
+    // calculate the left- and right- invariant SHF for each variant site
+    ShfInvariant shfinv (GL, arma::nonzeros(variant_index)-1, sample_index);
+
+    // invariant-invariant SHF
+    arma::sp_mat iSHF (shfinv.lSHF.n_rows, 1);
+    arma::uvec invariant_bin = arma::find(
+        shfinv.configurations.row(0) == 0 && 
+        shfinv.configurations.row(1) == 0 && 
+        shfinv.configurations.row(2) == 0 );
+    iSHF.at(invariant_bin[0]) = 1.;
+
+    // assemble SHF, weights per bin
+    for (unsigned i=0; i<bins.n_rows; ++i)
+    {
+      // ensure that variant index pairs are sorted
+      arma::uvec index = arma::regspace<arma::uvec>(0, variant[i].n_cols-1);
+      std::sort (index.begin(), index.end(), 
+          [&](int j, int k){ return
+            variant[i].at(0,j)==variant[i].at(0,k) ? 
+            variant[i].at(1,j)<variant[i].at(1,k)  : 
+            variant[i].at(0,j)<variant[i].at(0,k); });
+      variant[i] = variant[i].cols(index);
+
+      // calculate the variant-variant SHF for a bin
+      Shf shf (GL, variant[i], sample_index);
+
+      SHF.push_back(arma::join_horiz(arma::join_horiz(arma::join_horiz(shf.SHF, shfinv.lSHF), shfinv.rSHF), iSHF));
+      weights.push_back(arma::join_vert(arma::join_vert(arma::join_vert(arma::ones<arma::uvec>(variant[i].n_cols), left_invariant[i]), right_invariant[i]), arma::uvec({invariant[i]})));
+      config.push_back(shf.configurations);
+    }
+  }
+
+  ShfWindow (const ShfWindow& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , sample_index (rhs.sample_index)
+    , rmap (rhs.rmap)
+    , bins (rhs.bins)
+    // don't allocate
+    , cM (0, arma::fill::zeros)
+    , variant_index (0, arma::fill::zeros)
+    // references for workers
+    , rvariant_index (rhs.rvariant_index)
+    , rcM (rhs.rcM)
+  {}
+
+  void operator() (const size_t begin, const size_t end)
+  {
+    unsigned number_variants = rvariant_index.max();
+
+    // allocate storage
+    for(unsigned i=0; i<bins.n_rows; ++i)
+    {
+      variant.push_back(arma::zeros<arma::umat>(2, 0));
+      left_invariant.push_back(arma::zeros<arma::uvec>(number_variants));
+      right_invariant.push_back(arma::zeros<arma::uvec>(number_variants));
+      invariant.push_back(0);
+    }
+
+    // in each window, assembly lists of sites to calculate SHF for and tallies of invariant sites
+    for (unsigned i=begin; i<end; ++i)
+      for (unsigned j=i+1; j<GL.sites; ++j)
+        if (GL.pos.at(0,i) == GL.pos.at(0,j) && 
+            arma::is_finite(rcM.at(i)+rcM.at(j))) // on same chromosome with valid positions
+        {
+          double dist = fabs(rcM.at(j) - rcM.at(i));
+          arma::uvec bin = arma::find(bins.col(0) <= dist && bins.col(1) > dist);
+
+          if (rvariant_index[i] && rvariant_index[j]) 
+            // append to list of variant pairs in window
+            variant[bin[0]].insert_cols(variant[bin[0]].n_cols, arma::uvec({i, j}));
+          else if (!rvariant_index[i] && rvariant_index[j]) 
+            // increment # left-invariants of site j
+            left_invariant[bin[0]].at(rvariant_index[j]-1)++;
+          else if (rvariant_index[i] && !rvariant_index[j]) 
+            // increment # right-invariants of site i
+            right_invariant[bin[0]].at(rvariant_index[i]-1)++;
+          else 
+            // increment # invariant pairs
+            invariant[bin[0]]++;
+        }
+  }
+
+  void join (const ShfWindow& rhs)
+  {
+    for(unsigned i=0; i<bins.n_rows; ++i)
+    {
+      variant[i].insert_cols(variant[i].n_cols, rhs.variant[i]);
+      left_invariant[i] += rhs.left_invariant[i];
+      right_invariant[i] += rhs.right_invariant[i];
+      invariant[i] += rhs.invariant[i];
+    }
+  }
+  
+  arma::mat buffer_bins (arma::mat bin)
+  {
+    if (bin.min() < 0.)
+      Rcpp::stop("[ShfWindow::buffer_bins] Bin positions cannot be negative and must have start and end");
+
+    // if necessary insert initial bin
+    if (bin.at(0,0) > 0.)
+      bin.insert_rows (0, arma::rowvec({0., bin.at(0,0)}));
+
+    // if necessary insert terminal bin
+    if (bin.at(bin.n_rows-1,1) < arma::datum::inf)
+      bin.insert_rows (bin.n_rows, arma::rowvec({bin.at(bin.n_rows-1,1), arma::datum::inf}));
+
+    return bin;
+  }
+
+  arma::uvec call_variants (const double thresh)
+  {
+    // call and store indices of variants
+    // NB: currently use all samples available. This is less storage efficient but ensures that
+    //     all SHF that generated from the same GL have equivalent positions
+    Frequencies freq (GL, arma::regspace<arma::uvec>(0, GL.sites-1), arma::regspace<arma::uvec>(0, GL.samples-1));
+    arma::uvec out (GL.sites, arma::fill::zeros); // note this will be 1-based
+    unsigned k = 1;
+    for (unsigned i=0; i<GL.sites; ++i)
+      if (freq.pval[i] < thresh)
+        out[i] = k++;
     return out;
   }
 };
@@ -3965,532 +4540,414 @@ arma::mat slider (arma::mat inp, arma::uvec coord, const unsigned window, const 
   return arma::trans(out);
 }
 
-// Haplotype frequency spectrum and Robertson-Hill basis
-
-// quantities from RHB that are needed:
-//
-// Projection: 1pop to 2chr
-// D_i       = E[p_AB p_ab - p_Ab p_aB]
-//
-// Projection: 1pop to 4chr
-// D_i^2     = E[p_AB^2 p_ab^2 - 2 p_AB p_Ab p_aB p_ab + p_Ab^2 p_aB^2]
-//
-// Projection: 2pop to 2x2chr
-// D_i D_j   = E[p_AB p_ab q_AB q_ab - p_AB p_ab q_Ab q_aB - p_Ab p_aB q_AB q_ab + p_Ab p_aB q_Ab q_aB]
-//
-// Projection: 1pop to 2,3,4chr
-// D_i z_ii  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab) (1 - 2 p_AB - 2 p_aB) ] =
-//             E[ (p_AB p_ab - p_Ab p_aB) (2 p_AB + 2 p_ab - 4 (p_AB p_ab - p_Ab p_aB) - 1) ] =
-//             E[2 p_AB^2 p_ab + 2 p_AB p_ab^2 - 2 p_AB p_Ab p_aB - 2 p_ab p_Ab p_aB - 4 D_i^2 - D_i]
-//
-// Projection: 2pop to 2,3x1
-// D_i z_ij  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab) (1 - 2 q_AB - 2 q_aB) ] =
-//             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab - 2 q_AB + 4 p_AB q_AB + 4 p_Ab q_AB - 2 q_aB + 4 p_AB q_aB + 4 p_Ab q_aB)] =
-//             D_i + 
-//             - 2 p_AB^2 p_ab + 2 p_AB p_Ab p_aB - 2 p_Ab p_AB p_ab + 2 p_Ab^2 p_aB 
-//             - 2 q_AB p_AB p_ab + 2 q_AB p_Ab p_aB - 2 q_aB p_AB p_ab + 2 q_aB p_Ab p_aB 
-//             + 4 p_AB^2 q_AB p_ab - 4 p_AB q_AB p_Ab p_aB + 4 p_Ab q_AB p_AB p_ab - 4 p_Ab^2 q_AB p_aB + 4 p_AB^2 q_aB p_ab - 4 p_AB q_aB p_Ab p_aB + 4 p_Ab q_aB p_AB p_ab - 4 p_Ab^2 q_aB p_aB
-//              
-// Projection: 3pop to 2x1x1
-// D_i z_jk  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab) (1 - 2 r_AB - 2 r_aB) ] =
-//             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab - 2 r_AB - 2 r_aB + 4 q_AB r_AB + 4 q_Ab r_AB + 4 q_AB r_aB + 4 q_Ab r_aB) ] =    
-//             D_i +
-//             - 2 p_AB p_ab q_AB + 2 p_Ab p_aB q_AB - 2 p_AB p_ab q_Ab + 2 p_Ab p_aB q_Ab 
-//             - 2 p_AB p_ab r_AB + 2 p_Ab p_aB r_AB - 2 p_AB p_ab r_aB + 2 p_Ab p_aB r_aB
-//             + 4 q_AB r_AB p_AB p_ab - 4 q_AB r_AB p_Ab p_aB + 4 q_Ab r_AB p_AB p_ab - 4 q_Ab r_AB p_Ab p_aB + 4 q_AB r_aB p_AB p_ab - 4 q_AB r_aB p_Ab p_aB + 4 q_Ab r_aB p_AB p_ab - 4 q_Ab r_aB p_Ab p_aB
-//
-// TODO
-// pi_{iiii} =
-// pi_{iiij} =
-// pi_{iijk} =
-// pi_{ijkl} =
-
-struct HFS1d : public RcppParallel::Worker
-{
-  // estimates a haplotype frequency spectrum 
-
-  // I initially attempted to estimate the projection directly. This doesn't work.
-  // So, we will invariably be working with very large matrices. Thus is it crucial
-  // to keep operations "sparse".
-
-  // The trick, however, is how to generalize to higher dimensional objects.
-  // I need to be able to generalize to 4-dimensional tensors. Options:
-  //   -internally use a "triplet-type" format, then convert to sptensor class for R
-  //   -try to keep things 2d max for HFS, and use special methods to get the other basis coefficients
-  
-  const arma::uvec &multiplier, &block;
-  const arma::sp_mat &shf; 
-
-  arma::umat configurations;
-  const arma::sp_mat projection;
-
-  arma::sp_mat hfs;
-  const arma::sp_mat pattern; //the sparsity pattern
-  double loglikelihood;
-
-  private:
-  arma::vec upd, buffer;
-  double loglik;
-  size_t sites;
-
-  // settings
-  bool   acceleration = true;        // use EM acceleration?
-  double errtol = 1e-16;             // not using dynamic bounds
-  double stepmax = 1., stepmin = 1.; // adaptive steplength
-
-  public:
-
-  HFS1d (const arma::sp_mat& shf, const arma::umat& cfg, 
-       const arma::uvec& block, const arma::uvec& multiplier, const unsigned prj)
-    : shf (shf)
-    , block (block)
-    , multiplier (multiplier)
-    , configurations (cfg)
-    , projection (make_projection(configurations, prj))//downprojects configurations
-    , hfs (projection.n_rows, arma::fill::ones)
-    // accumulated quantities
-    , loglik (0.)
-    , upd (arma::size(hfs), arma::fill::zeros)
-    , sites (0)
-    // temporaries
-    , buffer (arma::size(hfs))
-  {
-    const unsigned maxiter = 1000;
-
-    if (block.n_elem != shf.n_cols || block.max() >= multiplier.n_elem)
-      Rcpp::stop("[HFS1d] Dimension mismatch"); 
-    if (shf.min() < 0.)
-      Rcpp::stop("[HFS1d] SHF must be non-negative");
-
-    bool converged;
-    for (unsigned iter=0; iter<maxiter; ++iter)
-    {
-      converged = EMaccel();
-      if (converged) 
-        break;
-      fprintf(stderr, "[HFS1d]\titer %u, loglik = %f\n", iter, loglikelihood);
-    }
-
-    if (!converged)
-      Rcpp::warning("[HFS1d] EM did not converge in maximum number of iterations");
-  }
-
-  HFS1d (const HFS1d& rhs, RcppParallel::Split)
-    : shf (rhs.shf)
-    , block (rhs.block)
-    , multiplier (rhs.multiplier)
-    , configurations (rhs.configurations)
-    , projection (rhs.projection)
-    , hfs (rhs.hfs)
-    // accumulated quantities
-    , loglik (0.)
-    , upd (arma::size(hfs), arma::fill::zeros)
-    , sites (0)
-    // temporaries
-    , buffer (arma::size(hfs))
-  {}
-
-  arma::sp_mat make_projection (arma::umat& cfg, const unsigned prj)
-  {
-    if (cfg.n_cols != shf.n_rows || cfg.n_rows != 3)
-      Rcpp::stop("[HFS1d] Must provide a configuration for every bin of SHF, with exactly 3 entries");
-    if (prj < 1 || prj > cfg.max()) 
-      Rcpp::stop("[HFS1d] Projection size must be positive and less than the number of chromosomes");
-
-    const double errtol = std::pow(10., -9);
-
-    // generate new configuration
-    auto config = utils::all_haplotype_configurations(prj);
-
-    // loop over old configuration; for each entry in new configuration, get hypergeometric probability
-    unsigned n = cfg.max();
-    arma::mat proj (config.n_cols, cfg.n_cols);
-
-    for (unsigned c1 = 0; c1 < cfg.n_cols; ++c1)
-      for (unsigned c2 = 0; c2 < config.n_cols; ++c2)
-        proj.at(c2, c1) = exp(
-            R::lchoose(n-arma::accu(cfg.col(c1)), prj-arma::accu(config.col(c2))) + 
-            R::lchoose(cfg.at(0,c1), config.at(0,c2)) + 
-            R::lchoose(cfg.at(1,c1), config.at(1,c2)) + 
-            R::lchoose(cfg.at(2,c1), config.at(2,c2)) - 
-            R::lchoose(n, prj)); // multivariate hypergeometric pmf
-
-    // set configurations to projected
-    cfg = config;
-
-    // sparsify projection matrix
-    proj.clean(errtol);
-    proj.each_col([](arma::vec& x){ return x/arma::accu(x); }); //normalize
-
-    return arma::sp_mat(proj);
-  }
-
-  double likelihood (const arma::vec& inp, arma::vec& out, size_t& ns, const unsigned i2)
-  {
-    const unsigned mult = multiplier[block[i2]];
-
-    if (mult == 0)
-      return 0.;
-
-    den = 0.;
-
-    for (arma::sp_mat::const_col_iterator val0 = shf.begin_col(i2); 
-         val0 != shf.end_col(i2); ++val0)
-    {
-      buffer.at(val0.row()) = (*val0) * inp.at(val0.row());
-      den += buffer.at(val0.row());
-    }
-
-    if (fabs(den) < arma::datum::eps) // SHF empty for this site
-      return 0.;
-
-    for (arma::sp_mat::const_col_iterator val0 = shf.begin_col(i2); 
-         val0 != shf.end_col(i2); ++val0)
-    {
-      out.at(val0.row()) += mult * buffer.at(val0.row())/den;
-    }
-
-    ns += mult;
-
-    return mult * log(den);
-  }
-
-  void operator() (size_t start, size_t end)
-  {
-    for (size_t i = start; i != end; ++i)
-      loglik += likelihood (hfs, upd, sites, i);
-  }
-
-  void join (const HFS1d& rhs)
-  {
-    loglik += rhs.loglik;
-    upd    += rhs.upd;
-    sites  += rhs.sites;
-  }
-
-  double EM (void)
-  {
-    upd.zeros();
-    loglik = 0.;
-    sites = 0;
-
-    hfs /= arma::accu(hfs);
-
-    RcppParallel::parallelReduce(0, block.n_elem, *this);
-    //(*this)(0, block.n_elem);
-
-    hfs = upd / double(sites);
-
-    return loglik;
-  }
-
-  bool EMaccel (void)
-  {
-    const double tol = 1e-8;
-    const double mstep = 4.;
-
-    arma::mat hfs0 = hfs;
-    double    ll0  = loglikelihood;
-
-    loglikelihood  = EM ();
-    arma::mat hfs1 = hfs;
-    double    ll1  = loglikelihood,
-              sr2  = arma::accu(arma::pow(hfs1 - hfs0,2));
-    if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
-      return true;
-
-    if (!acceleration)
-      return false;
-
-    loglikelihood  = EM ();
-    arma::mat hfs2 = hfs;
-    double    ll2  = loglikelihood,
-              sq2  = arma::accu(arma::pow(hfs2 - hfs1,2));
-    if (!arma::is_finite(sq2) || fabs(ll2 - ll1) < tol || sqrt(sq2) < tol)
-      return true;
-
-    // accelerate
-    double sv2   = arma::accu(arma::pow(hfs2 - 2*hfs1 + hfs0,2)),
-           alpha = sqrt(sr2/sv2);
-    alpha = std::max(stepmin, std::min(stepmax, alpha));
-    hfs   = hfs0 + 2.*alpha*(hfs1 - hfs0) + alpha*alpha*(hfs2 - 2*hfs1 + hfs0);
-
-    // project
-    hfs  = arma::clamp(hfs, errtol, 1.-errtol);
-    hfs /= arma::accu(hfs);
-
-    // stabilize and reset if needed
-    loglikelihood = EM ();
-    if (!arma::is_finite(loglikelihood) || loglikelihood < ll2)
-    {
-      loglikelihood = ll2;
-      hfs = hfs2;
-    }
-
-    if (alpha == stepmax)
-      stepmax *= mstep;
-
-    return false;
-  }
-};
-
-// [[Rcpp::export()]]
-Rcpp::List hfs1d (const arma::sp_mat shf, const arma::umat cfg, const arma::uvec block, const unsigned num_boot, const unsigned proj)
-{
-  arma::uvec uniq_block = arma::unique(block);
-
-  if (block.max() >= uniq_block.n_elem)
-    Rcpp::stop("Block indices must be 0-based and contiguous");
-  if (block.n_elem != shf.n_cols)
-    Rcpp::stop("Dimension mismatch");
-
-  arma::mat hfs;
-  arma::uvec multiplier (uniq_block.n_elem, arma::fill::ones);
-  arma::umat config = cfg;
-  arma::mat prj;
-
-  for (unsigned boot = 0; boot <= num_boot; ++boot)
-  {
-    if (boot)
-    {
-      multiplier.zeros();
-      arma::uvec resample = arma::randi<arma::uvec>(uniq_block.n_elem, arma::distr_param(0, uniq_block.n_elem-1));
-      for (auto b : resample)
-        multiplier[b] += 1;
-    } 
-    HFS1d estimate (shf, cfg, block, multiplier, proj);
-    if (!boot)
-    {
-      config = estimate.configurations;
-      hfs.set_size(config.n_cols, num_boot+1);
-      prj = estimate.projection;
-    }
-    hfs.col(boot) = estimate.hfs;
-  }
-
-  return Rcpp::List::create(
-      Rcpp::_["HFS"] = hfs,
-      Rcpp::_["config"] = config,
-      Rcpp::_["proj"] = prj);
-}
-
-//struct HFS2d : public RcppParallel::Worker
+//namespace RobinsonHill
 //{
-//  // estimates a haplotype frequency spectrum 
+//  // these are horrendously bloated but whatever
 //  
-//  const arma::uvec &multiplier, &block;
-//  const arma::sp_mat &shf0, &shf1; 
-//
-//  arma::umat configurations0, configurations1;
-//  const arma::sp_mat projection0, projection1;
-//
-//  arma::mat hfs;
-//  double loglikelihood;
-//
-//  private:
-//  arma::mat upd, buffer;
-//  double loglik;
-//  size_t sites;
-//
-//  // settings
-//  bool   acceleration = true;        // use EM acceleration?
-//  double errtol = 1e-16;             // not using dynamic bounds
-//  double stepmax = 1., stepmin = 1.; // adaptive steplength
-//
-//  public:
-//
-//  HFS1d (const arma::sp_mat& shf, const arma::umat& cfg, 
-//       const arma::uvec& block, const arma::uvec& multiplier, const unsigned prj)
-//    : shf (shf)
-//    , block (block)
-//    , multiplier (multiplier)
-//    , configurations (cfg)
-//    , projection (make_projection(configurations, prj))//downprojects configurations
-//    , hfs (projection.n_rows, arma::fill::ones)
-//    // accumulated quantities
-//    , loglik (0.)
-//    , upd (arma::size(hfs), arma::fill::zeros)
-//    , sites (0)
-//    // temporaries
-//    , buffer (arma::size(hfs))
+//  double Di (arma::vec hfs, arma::umat config)
 //  {
-//    const unsigned maxiter = 1000;
+//    // Unbiased estimate of expected linkage disequillibrium 'E[D]'
+//    //
+//    // Projection: 1pop to 2chr
+//    // D_i = E[p_AB p_ab - p_Ab p_aB]
+//    
+//    if (config.max() < 2)
+//      Rcpp::stop("[RobinsonHill::Di] Insufficient number of chromosomes");
 //
-//    if (block.n_elem != shf.n_cols || block.max() >= multiplier.n_elem)
-//      Rcpp::stop("[HFS1d] Dimension mismatch"); 
-//    if (shf.min() < 0.)
-//      Rcpp::stop("[HFS1d] SHF must be non-negative");
+//    Rcpp::List dp = utils::hfs1d_downproject (hfs, config, 2);
 //
-//    bool converged;
-//    for (unsigned iter=0; iter<maxiter; ++iter)
-//    {
-//      converged = EMaccel();
-//      if (converged) 
-//        break;
-//      fprintf(stderr, "[HFS1d]\titer %u, loglik = %f\n", iter, loglikelihood);
-//    }
+//    hfs    = dp["hfs"];
+//    config = dp["config"][0];
 //
-//    if (!converged)
-//      Rcpp::warning("[HFS1d] EM did not converge in maximum number of iterations");
+//    arma::uvec bin1001 = arma::find (config.row(0) == 0 && config.row(1) == 0 && config.row(2) == 1),
+//               bin0110 = arma::find (config.row(0) == 1 && config.row(1) == 1 && config.row(2) == 0);
+//
+//    return 1./utils::multichoose(config.col(bin1001[0])) * hfs.at(bin1001[0]) - 
+//           1./utils::multichoose(config.col(bin0110[0])) * hfs.at(bin0110[0]);
 //  }
 //
-//  HFS1d (const HFS1d& rhs, RcppParallel::Split)
-//    : shf (rhs.shf)
-//    , block (rhs.block)
-//    , multiplier (rhs.multiplier)
-//    , configurations (rhs.configurations)
-//    , projection (rhs.projection)
-//    , hfs (rhs.hfs)
-//    // accumulated quantities
-//    , loglik (0.)
-//    , upd (arma::size(hfs), arma::fill::zeros)
-//    , sites (0)
-//    // temporaries
-//    , buffer (arma::size(hfs))
-//  {}
-//
-//  arma::sp_mat make_projection (arma::umat& cfg, const unsigned prj)
+//  double DiDi (arma::vec hfs, arma::umat config)
 //  {
-//    if (cfg.n_cols != shf.n_rows || cfg.n_rows != 3)
-//      Rcpp::stop("[HFS1d] Must provide a configuration for every bin of SHF, with exactly 3 entries");
-//    if (prj < 1 || prj > cfg.max()) 
-//      Rcpp::stop("[HFS1d] Projection size must be positive and less than the number of chromosomes");
+//    // Unbiased estimate of variance of linkage disequillibrium 'E[D^2]'
+//    //
+//    // Projection: 1pop to 4chr
+//    // D_i^2 = E[p_AB^2 p_ab^2 - 2 p_AB p_Ab p_aB p_ab + p_Ab^2 p_aB^2]
+//    
+//    if (config.max() < 4)
+//      Rcpp::stop("[RobinsonHill::DiDi] Insufficient number of chromosomes");
 //
-//    const double errtol = std::pow(10., -9);
+//    Rcpp::List dp = utils::hfs1d_downproject (hfs, config, 4);
 //
-//    // generate new configuration
-//    auto config = utils::all_haplotype_configurations(prj);
+//    hfs    = dp["hfs"];
+//    config = dp["config"][0];
 //
-//    // loop over old configuration; for each entry in new configuration, get hypergeometric probability
-//    unsigned n = cfg.max();
-//    arma::mat proj (config.n_cols, cfg.n_cols);
+//    arma::uvec bin2002 = arma::find (config.row(0) == 0 && config.row(1) == 0 && config.row(2) == 2),
+//               bin1111 = arma::find (config.row(0) == 1 && config.row(1) == 1 && config.row(2) == 1),
+//               bin0220 = arma::find (config.row(0) == 2 && config.row(1) == 2 && config.row(2) == 0);
 //
-//    for (unsigned c1 = 0; c1 < cfg.n_cols; ++c1)
-//      for (unsigned c2 = 0; c2 < config.n_cols; ++c2)
-//        proj.at(c2, c1) = exp(
-//            R::lchoose(n-arma::accu(cfg.col(c1)), prj-arma::accu(config.col(c2))) + 
-//            R::lchoose(cfg.at(0,c1), config.at(0,c2)) + 
-//            R::lchoose(cfg.at(1,c1), config.at(1,c2)) + 
-//            R::lchoose(cfg.at(2,c1), config.at(2,c2)) - 
-//            R::lchoose(n, prj)); // multivariate hypergeometric pmf
-//
-//    // set configurations to projected
-//    cfg = config;
-//
-//    // sparsify projection matrix
-//    proj.clean(errtol);
-//    proj.each_col([](arma::vec& x){ return x/arma::accu(x); }); //normalize
-//
-//    return arma::sp_mat(proj);
+//    return 1./utils::multichoose(config.col(bin2002[0])) * hfs.at(bin2002[0]) - 
+//           2./utils::multichoose(config.col(bin1111[0])) * hfs.at(bin1111[0]) + 
+//           1./utils::multichoose(config.col(bin0220[0])) * hfs.at(bin0220[0]);
 //  }
 //
-//  double likelihood (const arma::vec& inp, arma::vec& out, size_t& ns, const unsigned i2)
+//  double DiDj (arma::mat hfs, arma::umat config0, arma::umat config1)
 //  {
-//    const unsigned mult = multiplier[block[i2]];
+//    // Unbiased estimate of covariance of linkage disequillibrium 'E[D_i D_j]'
+//    //
+//    // Projection: 2pop to 2x2chr
+//    // D_i D_j   = E[p_AB p_ab q_AB q_ab - p_AB p_ab q_Ab q_aB - p_Ab p_aB q_AB q_ab + p_Ab p_aB q_Ab q_aB]
+//    
+//    if (config0.max() < 2 || config1.max() < 2)
+//      Rcpp::stop("[RobinsonHill::DiDj] Insufficient number of chromosomes");
 //
-//    if (mult == 0)
-//      return 0.;
+//    Rcpp::List dp = utils::hfs2d_downproject (hfs, config0, 2, config1, 2);
 //
-//    buffer.zeros();
+//    hfs     = dp["hfs"];
+//    config0 = dp["config"][0];
+//    config1 = dp["config"][1];
 //
-//    // apply projection (I suppose this could be applied once via matrix multiplication)
-//    for (arma::sp_mat::const_col_iterator val0 = shf.begin_col(i2); 
-//         val0 != shf.end_col(i2); ++val0)
-//    {
-//      for (arma::sp_mat::const_col_iterator prj0 = projection.begin_col(val0.row()); 
-//           prj0 != projection.end_col(val0.row()); ++prj0)
-//      {
-//        buffer.at(prj0.row()) += (*prj0) * (*val0);
-//      }
-//    }
+//    arma::uvec bin1001a = arma::find (config0.row(0) == 0 && config0.row(1) == 0 && config0.row(2) == 1),
+//               bin1001b = arma::find (config1.row(0) == 0 && config1.row(1) == 0 && config1.row(2) == 1),
+//               bin0110a = arma::find (config0.row(0) == 1 && config0.row(1) == 1 && config0.row(2) == 0),
+//               bin0110b = arma::find (config1.row(0) == 1 && config1.row(1) == 1 && config1.row(2) == 0);
 //
-//    buffer %= inp;
-//
-//    double den = arma::accu(buffer);
-//    if (fabs(den) < arma::datum::eps) // SHF empty for this site
-//      return 0.;
-//
-//    out += mult * buffer/den;
-//    ns  += mult;
-//
-//    return mult * log(den);
+//    return 1./(utils::multichoose(config0.col(bin1001a[0])) * utils::multichoose(config1.col(bin1001b[0]))) * hfs.at(bin1001a[0], bin1001b[0]) - 
+//           1./(utils::multichoose(config0.col(bin1001a[0])) * utils::multichoose(config1.col(bin0110b[0]))) * hfs.at(bin1001a[0], bin0110b[0]) - 
+//           1./(utils::multichoose(config0.col(bin0110a[0])) * utils::multichoose(config1.col(bin1001b[0]))) * hfs.at(bin0110a[0], bin1001b[0]) - 
+//           1./(utils::multichoose(config0.col(bin0110a[0])) * utils::multichoose(config1.col(bin0110b[0]))) * hfs.at(bin0110a[0], bin0110b[0]);
 //  }
 //
-//  void operator() (size_t start, size_t end)
+//  double DiZii (arma::mat hfs, arma::umat config)
 //  {
-//    for (size_t i = start; i != end; ++i)
-//      loglik += likelihood (hfs, upd, sites, i);
+//    // Unbiased estimate of single population, frequency-weighted linkage disequillibrium 'E[D_i z_ii]'
+//    //
+//    // Projection: 1pop to 2,3,4chr
+//    // D_i z_ii  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab) (1 - 2 p_AB - 2 p_aB) ] =
+//    //             E[ (p_AB p_ab - p_Ab p_aB) (2 p_AB + 2 p_ab - 4 (p_AB p_ab - p_Ab p_aB) - 1) ] =
+//    //             E[2 p_AB^2 p_ab + 2 p_AB p_ab^2 - 2 p_AB p_Ab p_aB - 2 p_ab p_Ab p_aB - 4 D_i^2 - D_i]
+//    
+//    if (config.max() < 4)
+//      Rcpp::stop("[RobinsonHill::DiZii] Insufficient number of chromosomes");
+//
+//    Rcpp::List dp = utils::hfs1d_downproject (hfs, config, 3);
+//
+//    double di = RobinsonHill::Di (hfs, config),
+//           didi = RobinsonHill::DiDi (hfs, config);
+//
+//    hfs     = dp["hfs"];
+//    config  = dp["config"][0];
+//
+//    arma::uvec bin1002 = arma::find (config.row(0) == 0 && config.row(1) == 0 && config.row(2) == 2),
+//               bin2001 = arma::find (config.row(0) == 0 && config.row(1) == 0 && config.row(2) == 1),
+//               bin0111 = arma::find (config.row(0) == 1 && config.row(1) == 1 && config.row(2) == 1),
+//               bin1110 = arma::find (config.row(0) == 1 && config.row(1) == 1 && config.row(2) == 0);
+//
+//    return 2./utils::multichoose(config.col(bin1002[0])) * hfs.at(bin1002[0]) +
+//           2./utils::multichoose(config.col(bin2001[0])) * hfs.at(bin2001[0]) - 
+//           2./utils::multichoose(config.col(bin0111[0])) * hfs.at(bin0111[0]) - 
+//           2./utils::multichoose(config.col(bin1110[0])) * hfs.at(bin1110[0]) -
+//           di - 4. * didi;
 //  }
 //
-//  void join (const HFS1d& rhs)
+//  double DiZij (arma::mat hfs2d, arma::umat config0, arma::umat config1)
 //  {
-//    loglik += rhs.loglik;
-//    upd    += rhs.upd;
-//    sites  += rhs.sites;
+//    // Unbiased estimate of two population, frequency-weighted linkage disequillibrium 'E[D_i z_ij]'
+//    //
+//    // Projection: 2pop to 2,3x1
+//    // D_i z_ij  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab) (1 - 2 q_AB - 2 q_aB) ] =
+//    //             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 p_AB - 2 p_Ab - 2 q_AB + 4 p_AB q_AB + 4 p_Ab q_AB - 2 q_aB + 4 p_AB q_aB + 4 p_Ab q_aB)] =
+//    //             D_i + 
+//    //             - 2 p_AB^2 p_ab + 2 p_AB p_Ab p_aB - 2 p_Ab p_AB p_ab + 2 p_Ab^2 p_aB 
+//    //             - 2 q_AB p_AB p_ab + 2 q_AB p_Ab p_aB - 2 q_aB p_AB p_ab + 2 q_aB p_Ab p_aB 
+//    //             + 4 p_AB^2 q_AB p_ab - 4 p_AB q_AB p_Ab p_aB + 4 p_Ab q_AB p_AB p_ab - 4 p_Ab^2 q_AB p_aB + 4 p_AB^2 q_aB p_ab - 4 p_AB q_aB p_Ab p_aB + 4 p_Ab q_aB p_AB p_ab - 4 p_Ab^2 q_aB p_aB
+//
+//    if (config0.max() < 3 || config1.max() < 1)
+//      Rcpp::stop("[RobinsonHill::DiZij] Insufficient number of chromosomes");
+//
+//    Rcpp::List dp3 = utils::hfs2d_downproject (hfs, config0, 3, config1, 1),
+//               dp2 = utils::hfs2d_downproject (hfs, config0, 2, config1, 1);
+//
+//    arma::mat hfs3 = dp3["hfs"],
+//              hfs2 = dp2["hfs"];
+//
+//    arma::umat config0a = dp3["config"][0],
+//               config1a = dp3["config"][1],
+//               config0b = dp2["config"][0],
+//               config1b = dp2["config"][1];
+//
+//    // marginalize over second population by summing over columns
+//    arma::vec mhfs3 = arma::sum(hfs3, 0),
+//              mhfs2 = arma::sum(hfs2, 0);
+//
+//    arma::uvec bin1002 = arma::find (config0a.row(0) == 0 && config0a.row(1) == 0 && config0a.row(2) == 2),
+//               bin0111 = arma::find (config0a.row(0) == 1 && config0a.row(1) == 1 && config0a.row(2) == 1),
+//               bin1101 = arma::find (config0a.row(0) == 1 && config0a.row(1) == 0 && config0a.row(2) == 1),
+//               bin0210 = arma::find (config0a.row(0) == 2 && config0a.row(1) == 1 && config0a.row(2) == 0),
+//               bin1001 = arma::find (config0b.row(0) == 0 && config0b.row(1) == 0 && config0b.row(2) == 1),
+//               bin0110 = arma::find (config0b.row(0) == 1 && config0b.row(1) == 1 && config0b.row(2) == 0),
+//               bin0010 = arma::find (config1a.row(0) == 0 && config1a.row(1) == 1 && config1a.row(2) == 0),
+//               bin0001 = arma::find (config1a.row(0) == 0 && config1a.row(1) == 0 && config1a.row(2) == 1);
+//
+//    double di = 0.5 * (mhfs.at(bin1001[0]) - mhfs.at(bin0110[0]));
+//
+//    return di +
+//      // 3x0
+//      -2./utils::multichoose(config0a.col(bin1002[0])) * mhfs3.at(bin1002[0]) +
+//       2./utils::multichoose(config0a.col(bin0111[0])) * mhfs3.at(bin0111[0]) +
+//      -2./utils::multichoose(config0a.col(bin1101[0])) * mhfs3.at(bin1101[0]) +
+//       2./utils::multichoose(config0a.col(bin0210[0])) * mhfs3.at(bin0210[0]) +
+//     // 2x1
+//      -2./utils::multichoose(config0b.col(bin1001[0])) * hfs2.at(bin1001[0], bin0001[0]) +
+//       2./utils::multichoose(config0b.col(bin0110[0])) * hfs2.at(bin0110[0], bin0001[0]) +
+//      -2./utils::multichoose(config0b.col(bin1001[0])) * hfs2.at(bin1001[0], bin0010[0]) +
+//       2./utils::multichoose(config0b.col(bin0110[0])) * hfs2.at(bin0110[0], bin0010[0]) +
+//     // 3x1
+//       4./utils::multichoose(config0a.col(bin1002[0])) * hfs3.at(bin1002[0], bin0001[0]) +
+//      -4./utils::multichoose(config0a.col(bin0111[0])) * hfs3.at(bin0111[0], bin0001[0]) +
+//       4./utils::multichoose(config0a.col(bin1101[0])) * hfs3.at(bin1101[0], bin0001[0]) +
+//      -4./utils::multichoose(config0a.col(bin0210[0])) * hfs3.at(bin0210[0], bin0001[0]) +
+//       4./utils::multichoose(config0a.col(bin1002[0])) * hfs3.at(bin1002[0], bin0010[0]) +
+//      -4./utils::multichoose(config0a.col(bin0111[0])) * hfs3.at(bin0111[0], bin0010[0]) +
+//       4./utils::multichoose(config0a.col(bin1101[0])) * hfs3.at(bin1101[0], bin0010[0]) +
+//      -4./utils::multichoose(config0a.col(bin0210[0])) * hfs3.at(bin0210[0], bin0010[0]);
 //  }
 //
-//  double EM (void)
+//  double DiZji (arma::mat hfs2d, arma::umat config0, arma::umat config1)
 //  {
-//    upd.zeros();
-//    loglik = 0.;
-//    sites = 0;
+//    // Unbiased estimate of two population, frequency-weighted linkage disequillibrium 'E[D_i z_ji]'
+//    //
+//    // Projection: 2pop to 2,3x1
+//    // D_i z_ji  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab) (1 - 2 p_AB - 2 p_aB) ] =
+//    //             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab - 2 p_AB + 4 q_AB p_AB + 4 q_Ab p_AB - 2 p_aB + 4 q_AB p_aB + 4 q_Ab p_aB)] =
+//    //             D_i + 
+//    //             - 2 p_AB^2 p_ab + 2 p_Ab p_aB p_AB - 2 p_aB p_AB p_ab + 2 p_aB^2 p_Ab 
+//    //             - 2 p_AB p_ab q_AB + 2 p_Ab p_aB q_AB - 2 p_AB p_ab q_Ab + 2 p_Ab p_aB q_Ab
+//    //             + 4 q_AB p_AB^2 p_ab - 4 q_AB p_AB p_Ab p_aB + 4 q_Ab p_AB^2 p_ab - 4 q_Ab p_AB p_Ab p_aB
+//    //             + 4 q_AB p_aB p_AB p_ab - 4 q_AB p_aB^2 p_Ab + 4 q_Ab p_aB p_AB p_ab - 4 q_Ab p_aB^2 p_Ab
 //
-//    hfs /= arma::accu(hfs);
+//    if (config0.max() < 3 || config1.max() < 1)
+//      Rcpp::stop("[RobinsonHill::DiZji] Insufficient number of chromosomes");
 //
-//    RcppParallel::parallelReduce(0, block.n_elem, *this);
-//    //(*this)(0, multiplier.n_elem);
+//    Rcpp::List dp3 = utils::hfs2d_downproject (hfs, config0, 3, config1, 1),
+//               dp2 = utils::hfs2d_downproject (hfs, config0, 2, config1, 1);
 //
-//    hfs = upd / double(sites);
+//    arma::mat hfs3 = dp3["hfs"],
+//              hfs2 = dp2["hfs"];
 //
-//    return loglik;
+//    arma::umat config0a = dp3["config"][0],
+//               config1a = dp3["config"][1],
+//               config0b = dp2["config"][0],
+//               config1b = dp2["config"][1];
+//
+//    // marginalize over second population by summing over columns
+//    arma::vec mhfs3 = arma::sum(hfs3, 0),
+//              mhfs2 = arma::sum(hfs2, 0);
+//
+//    arma::uvec bin1002 = arma::find (config0a.row(0) == 0 && config0a.row(1) == 0 && config0a.row(2) == 2),
+//               bin0111 = arma::find (config0a.row(0) == 1 && config0a.row(1) == 1 && config0a.row(2) == 1),
+//               bin1011 = arma::find (config0a.row(0) == 0 && config0a.row(1) == 1 && config0a.row(2) == 1),
+//               bin0120 = arma::find (config0a.row(0) == 1 && config0a.row(1) == 2 && config0a.row(2) == 0),
+//               bin1001 = arma::find (config0b.row(0) == 0 && config0b.row(1) == 0 && config0b.row(2) == 1),
+//               bin0110 = arma::find (config0b.row(0) == 1 && config0b.row(1) == 1 && config0b.row(2) == 0),
+//               bin0100 = arma::find (config1a.row(0) == 1 && config1a.row(1) == 0 && config1a.row(2) == 0),
+//               bin0001 = arma::find (config1a.row(0) == 0 && config1a.row(1) == 0 && config1a.row(2) == 1);
+//
+//    double di = 0.5 * (mhfs.at(bin1001[0]) - mhfs.at(bin0110[0]));
+//
+//    return di +
+//      // 3x0
+//      -2./utils::multichoose(config0a.col(bin1002[0])) * mhfs3.at(bin1002[0]) +
+//       2./utils::multichoose(config0a.col(bin0111[0])) * mhfs3.at(bin0111[0]) +
+//      -2./utils::multichoose(config0a.col(bin1011[0])) * mhfs3.at(bin1011[0]) +
+//       2./utils::multichoose(config0a.col(bin0120[0])) * mhfs3.at(bin0120[0]) +
+//     // 2x1
+//      -2./utils::multichoose(config0b.col(bin1001[0])) * hfs2.at(bin1001[0], bin0001[0]) +
+//       2./utils::multichoose(config0b.col(bin0110[0])) * hfs2.at(bin0110[0], bin0001[0]) +
+//      -2./utils::multichoose(config0b.col(bin1001[0])) * hfs2.at(bin1001[0], bin0100[0]) +
+//       2./utils::multichoose(config0b.col(bin0110[0])) * hfs2.at(bin0110[0], bin0100[0]) +
+//     // 3x1
+//       4./utils::multichoose(config0a.col(bin1002[0])) * hfs3.at(bin1002[0], bin0001[0]) +
+//      -4./utils::multichoose(config0a.col(bin0111[0])) * hfs3.at(bin0111[0], bin0001[0]) +
+//       4./utils::multichoose(config0a.col(bin1011[0])) * hfs3.at(bin1011[0], bin0001[0]) +
+//      -4./utils::multichoose(config0a.col(bin0120[0])) * hfs3.at(bin0120[0], bin0001[0]) +
+//       4./utils::multichoose(config0a.col(bin1002[0])) * hfs3.at(bin1002[0], bin0100[0]) +
+//      -4./utils::multichoose(config0a.col(bin0111[0])) * hfs3.at(bin0111[0], bin0100[0]) +
+//       4./utils::multichoose(config0a.col(bin1011[0])) * hfs3.at(bin1011[0], bin0100[0]) +
+//      -4./utils::multichoose(config0a.col(bin0120[0])) * hfs3.at(bin0120[0], bin0100[0]);
 //  }
 //
-//  bool EMaccel (void)
+//  double DiZjk (arma::mat hfs3d, arma::umat config0, arma::umat config1, arma::umat config2)
 //  {
-//    const double tol = 1e-8;
-//    const double mstep = 4.;
+//    // Unbiased estimate of two population, frequency-weighted linkage disequillibrium 'E[D_i z_jk]'
+//    //
+//    // Projection: 3pop to 2x1x1
+//    // D_i z_jk  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab) (1 - 2 r_AB - 2 r_aB) ] =
+//    //             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 q_AB - 2 q_Ab - 2 r_AB - 2 r_aB + 4 q_AB r_AB + 4 q_Ab r_AB + 4 q_AB r_aB + 4 q_Ab r_aB) ] =    
+//    //             D_i +
+//    //             - 2 p_AB p_ab q_AB + 2 p_Ab p_aB q_AB - 2 p_AB p_ab q_Ab + 2 p_Ab p_aB q_Ab 
+//    //             - 2 p_AB p_ab r_AB + 2 p_Ab p_aB r_AB - 2 p_AB p_ab r_aB + 2 p_Ab p_aB r_aB
+//    //             + 4 q_AB r_AB p_AB p_ab - 4 q_AB r_AB p_Ab p_aB + 4 q_Ab r_AB p_AB p_ab - 4 q_Ab r_AB p_Ab p_aB 
+//    //             + 4 q_AB r_aB p_AB p_ab - 4 q_AB r_aB p_Ab p_aB + 4 q_Ab r_aB p_AB p_ab - 4 q_Ab r_aB p_Ab p_aB
 //
-//    arma::mat hfs0 = hfs;
-//    double    ll0  = loglikelihood;
+//    if (config0.max() < 3 || config1.max() < 1 || config2.max() < 1)
+//      Rcpp::stop("[RobinsonHill::DiZjk] Insufficient number of chromosomes");
 //
-//    loglikelihood  = EM ();
-//    arma::mat hfs1 = hfs;
-//    double    ll1  = loglikelihood,
-//              sr2  = arma::accu(arma::pow(hfs1 - hfs0,2));
-//    if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
-//      return true;
+//    Rcpp::List dp = utils::hfs3d_downproject (hfs, config0, 2, config1, 1, config2, 1);
 //
-//    if (!acceleration)
-//      return false;
+//    arma::mat hfs = dp["hfs"];
 //
-//    loglikelihood  = EM ();
-//    arma::mat hfs2 = hfs;
-//    double    ll2  = loglikelihood,
-//              sq2  = arma::accu(arma::pow(hfs2 - hfs1,2));
-//    if (!arma::is_finite(sq2) || fabs(ll2 - ll1) < tol || sqrt(sq2) < tol)
-//      return true;
+//    arma::umat config0 = dp["config"][0],
+//               config1 = dp["config"][1],
+//               config2 = dp["config"][2];
 //
-//    // accelerate
-//    double sv2   = arma::accu(arma::pow(hfs2 - 2*hfs1 + hfs0,2)),
-//           alpha = sqrt(sr2/sv2);
-//    alpha = std::max(stepmin, std::min(stepmax, alpha));
-//    hfs   = hfs0 + 2.*alpha*(hfs1 - hfs0) + alpha*alpha*(hfs2 - 2*hfs1 + hfs0);
+//    // marginalize over third populations
+//    arma::mat mhfs_ij (config0.n_cols, config1.n_cols, arma::fill::zeros),
+//              mhfs_ik (config0.n_cols, config2.n_cols, arma::fill::zeros);
+//    for (unsigned i=0; i<config0.n_cols; ++i)
+//      for (unsigned j=0; j<config1.n_cols; ++j)
+//        for (unsigned k=0; k<config2.n_cols; ++k)
+//        {
+//          mhfs_ij.at(i,j) += hfs.at(i,j,k);
+//          mhfs_ik.at(i,k) += hfs.at(i,j,k);
+//        }
+//    arma::vec mhfs = arma::sum(mhfs_ij, 0);
 //
-//    // project
-//    hfs  = arma::clamp(hfs, errtol, 1.-errtol);
-//    hfs /= arma::accu(hfs);
+//    arma::uvec bin1001 = arma::find (config0.row(0) == 0 && config0.row(1) == 0 && config0.row(2) == 1),
+//               bin0110 = arma::find (config0.row(0) == 1 && config0.row(1) == 1 && config0.row(2) == 0),
+//               bin0100a = arma::find (config1.row(0) == 1 && config1.row(1) == 0 && config1.row(2) == 0),
+//               bin0001a = arma::find (config1.row(0) == 0 && config1.row(1) == 0 && config1.row(2) == 1),
+//               bin0010b = arma::find (config2.row(0) == 0 && config2.row(1) == 1 && config2.row(2) == 0),
+//               bin0001b = arma::find (config2.row(0) == 0 && config2.row(1) == 0 && config2.row(2) == 1);
 //
-//    // stabilize and reset if needed
-//    loglikelihood = EM ();
-//    if (!arma::is_finite(loglikelihood) || loglikelihood < ll2)
-//    {
-//      loglikelihood = ll2;
-//      hfs = hfs2;
-//    }
+//    double di = 0.5 * (mhfs.at(bin1001[0]) - mhfs.at(bin0110[0]));
 //
-//    if (alpha == stepmax)
-//      stepmax *= mstep;
-//
-//    return false;
+//    return di +
+//      // 2x1x0
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ij.at(bin1001[0], bin0001a[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ij.at(bin0110[0], bin0001a[0]) +
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ij.at(bin1001[0], bin0100a[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ij.at(bin0110[0], bin0100a[0]) +
+//     // 2x0x1
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ik.at(bin1001[0], bin0001b[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ik.at(bin0110[0], bin0001b[0]) +
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ik.at(bin1001[0], bin0010b[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ik.at(bin0110[0], bin0010b[0]) +
+//     // 2x1x1
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0001a[0], bin0001b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0001a[0], bin0001b[0]) +
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0100a[0], bin0001b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0100a[0], bin0001b[0]) +
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0001a[0], bin0010b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0001a[0], bin0010b[0]) +
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0100a[0], bin0010b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0100a[0], bin0010b[0]);
 //  }
-//};
+//
+//  double DiZkj (arma::cube hfs3d, arma::umat config0, arma::umat config1, arma::umat config2)
+//  {
+//    // Unbiased estimate of two population, frequency-weighted linkage disequillibrium 'E[D_i z_kj]'
+//    //
+//    // Projection: 3pop to 2x1x1
+//    // D_i z_kj  = E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 r_AB - 2 r_Ab) (1 - 2 q_AB - 2 q_aB) ] =
+//    //             E[ (p_AB p_ab - p_Ab p_aB) (1 - 2 r_AB - 2 r_Ab - 2 q_AB - 2 q_aB + 4 r_AB q_AB + 4 r_Ab q_AB + 4 r_AB q_aB + 4 r_Ab q_aB) ] =    
+//    //             D_i +
+//    //             - 2 p_AB p_ab r_AB + 2 p_Ab p_aB r_AB - 2 p_AB p_ab r_Ab + 2 p_Ab p_aB r_Ab 
+//    //             - 2 p_AB p_ab q_AB + 2 p_Ab p_aB q_AB - 2 p_AB p_ab q_aB + 2 p_Ab p_aB q_aB
+//    //             + 4 r_AB q_AB p_AB p_ab - 4 r_AB q_AB p_Ab p_aB + 4 r_Ab q_AB p_AB p_ab - 4 r_Ab q_AB p_Ab p_aB 
+//    //             + 4 r_AB q_aB p_AB p_ab - 4 r_AB q_aB p_Ab p_aB + 4 r_Ab q_aB p_AB p_ab - 4 r_Ab q_aB p_Ab p_aB
+//
+//    if (config0.max() < 3 || config1.max() < 1 || config2.max() < 1)
+//      Rcpp::stop("[RobinsonHill::DiZkj] Insufficient number of chromosomes");
+//
+//    Rcpp::List dp = utils::hfs3d_downproject (hfs, config0, 2, config1, 1, config2, 1);
+//
+//    arma::mat hfs = dp["hfs"];
+//
+//    arma::umat config0 = dp["config"][0],
+//               config1 = dp["config"][1],
+//               config2 = dp["config"][2];
+//
+//    // marginalize over third populations
+//    arma::mat mhfs_ij (config0.n_cols, config1.n_cols, arma::fill::zeros),
+//              mhfs_ik (config0.n_cols, config2.n_cols, arma::fill::zeros);
+//    for (unsigned i=0; i<config0.n_cols; ++i)
+//      for (unsigned j=0; j<config1.n_cols; ++j)
+//        for (unsigned k=0; k<config2.n_cols; ++k)
+//        {
+//          mhfs_ij.at(i,j) += hfs.at(i,j,k);
+//          mhfs_ik.at(i,k) += hfs.at(i,j,k);
+//        }
+//    arma::vec mhfs = arma::sum(mhfs_ij, 0);
+//
+//    arma::uvec bin1001 = arma::find (config0.row(0) == 0 && config0.row(1) == 0 && config0.row(2) == 1),
+//               bin0110 = arma::find (config0.row(0) == 1 && config0.row(1) == 1 && config0.row(2) == 0),
+//               bin0010a = arma::find (config1.row(0) == 0 && config1.row(1) == 1 && config1.row(2) == 0),
+//               bin0001a = arma::find (config1.row(0) == 0 && config1.row(1) == 0 && config1.row(2) == 1),
+//               bin0100b = arma::find (config2.row(0) == 1 && config2.row(1) == 0 && config2.row(2) == 0),
+//               bin0001b = arma::find (config2.row(0) == 0 && config2.row(1) == 0 && config2.row(2) == 1);
+//
+//    double di = 0.5 * (mhfs.at(bin1001[0]) - mhfs.at(bin0110[0]));
+//
+//    return di +
+//      // 2x1x0
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ij.at(bin1001[0], bin0001a[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ij.at(bin0110[0], bin0001a[0]) +
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ij.at(bin1001[0], bin0010a[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ij.at(bin0110[0], bin0010a[0]) +
+//     // 2x0x1
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ik.at(bin1001[0], bin0001b[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ik.at(bin0110[0], bin0001b[0]) +
+//      -2./utils::multichoose(config0.col(bin1001[0])) * mhfs_ik.at(bin1001[0], bin0100b[0]) +
+//       2./utils::multichoose(config0.col(bin0110[0])) * mhfs_ik.at(bin0110[0], bin0100b[0]) +
+//     // 2x1x1
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0001a[0], bin0001b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0001a[0], bin0001b[0]) +
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0010a[0], bin0001b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0010a[0], bin0001b[0]) +
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0001a[0], bin0100b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0001a[0], bin0100b[0]) +
+//       4./utils::multichoose(config0.col(bin1001[0])) * hfs.at(bin1001[0], bin0010a[0], bin0100b[0]) +
+//      -4./utils::multichoose(config0.col(bin0110[0])) * hfs.at(bin0110[0], bin0010a[0], bin0100b[0]);
+//  }
+//
+//  Rcpp::NumericVector basis (arma::cube hfs3d, arma::umat config0, arma::umat config1, arma::umat config2)
+//  {
+//    // calculate terms in the Robinson Hill basis involving E[D_i]
+//
+//    // marginalize
+//    arma::mat hfs_ij (config0.n_cols, config1.n_cols, arma::fill::zeros),
+//              hfs_ik (config0.n_cols, config2.n_cols, arma::fill::zeros);
+//    arma::vec hfs_i (config0.n_cols, arma::fill::zeros);
+//    for (unsigned i=0; i<config0.n_cols; ++i)
+//      for (unsigned j=0; j<config1.n_cols; ++j)
+//        for (unsigned k=0; k<config2.n_cols; ++k)
+//        {
+//          hfs_ij.at(i,j) += hfs3d.at(i,j,k);
+//          hfs_ik.at(i,k) += hfs3d.at(i,j,k);
+//          hfs_i.at(i)    += hfs3d.at(i,j,k);
+//        }
+//
+//    // various statistics; D_i, D_i^2, D_i D_j, D_i D_k, D_i z_ii, D_i z_ij, D_i z_ji,  D_i z_ik, D_i z_ki, D_i z_jk, D_i z_kj
+//    return Rcpp::NumericVector::create(
+//      Rcpp::_["Di"] = RobinsonHill::Di(hfs_i, config0),
+//      Rcpp::_["DiDi"] = RobinsonHill::DiDi(hfs_i, config0),
+//      Rcpp::_["DiDj"] = RobinsonHill::DiDj(hfs_ij, config0, config1),
+//      Rcpp::_["DiDk"] = RobinsonHill::DiDj(hfs_ik, config0, config2),
+//      Rcpp::_["DiZii"] = RobinsonHill::DiZii(hfs_i, config0),
+//      Rcpp::_["DiZij"] = RobinsonHill::DiZij(hfs_ij, config0, config1),
+//      Rcpp::_["DiZji"] = RobinsonHill::DiZji(hfs_ij, config0, config1),
+//      Rcpp::_["DiZik"] = RobinsonHill::DiZij(hfs_ik, config0, config2),
+//      Rcpp::_["DiZki"] = RobinsonHill::DiZji(hfs_ik, config0, config2),
+//      Rcpp::_["DiZjk"] = RobinsonHill::DiZjk(hfs3d, config0, config1, config2),
+//      Rcpp::_["DiZkj"] = RobinsonHill::DiZkj(hfs3d, config0, config1, config2)
+//      );
+//  }
+//}
+
+// [[Rcpp::export]]
+arma::mat hfs1d (const arma::sp_mat shf, const arma::uvec weights)
+{
+  arma::uvec block = arma::regspace<arma::uvec>(0, shf.n_cols-1);
+  SFS1d estimate (shf, block, weights, false);
+  return estimate.sfs;
+}
