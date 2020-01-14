@@ -1509,7 +1509,7 @@ struct Shf : public RcppParallel::Worker
       i = configurations.at(0,l);
       j = configurations.at(1,l);
       k = configurations.at(2,l);
-      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::uvec({chromosomes-i-j-k, i, j, k}));
+      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::ivec({chromosomes-i-j-k, i, j, k}));
     }
     out.clean(epsilon);
     out /= arma::accu(out);
@@ -1732,7 +1732,7 @@ struct ShfInvariant : public RcppParallel::Worker
       i = configurations.at(0,l);
       j = configurations.at(1,l);
       k = configurations.at(2,l);
-      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::uvec({chromosomes-i-j-k, i, j, k}));
+      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::ivec({chromosomes-i-j-k, i, j, k}));
     }
     out.clean(epsilon);
     out /= arma::accu(out);
