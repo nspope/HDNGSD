@@ -1905,10 +1905,12 @@ struct ShfWindow : public RcppParallel::Worker
     , rcM (cM)
   {
     // determine indices of variant pairs, and number of left/right/dual- invariant pairs.
+    std::fprintf(stderr, "[ShfWindow] Counting variant pairs per window\n");
     RcppParallel::parallelReduce(0, GL.sites-1, *this);
     //(*this)(0, GL.sites-1);
 
     // calculate the left- and right- invariant SHF for each variant site
+    std::fprintf(stderr, "[ShfWindow] Calculating SHF for variant-invariant pairs\n");
     ShfInvariant shfinv (GL, arma::find(variant_index), sample_index); 
 
     // invariant-invariant SHF
@@ -1920,6 +1922,7 @@ struct ShfWindow : public RcppParallel::Worker
     iSHF.at(invariant_bin[0]) = 1.;
 
     // assemble SHF, weights per bin
+    std::fprintf(stderr, "[ShfWindow] Calculating SHF for variant-variant pairs\n");
     for (unsigned i=0; i<bins.n_rows; ++i)
     {
       if (variant[i].n_cols)
