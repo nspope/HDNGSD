@@ -47,7 +47,7 @@ namespace utils
     return out;
   }
 
-  double multichoose (const arma::uvec vals)
+  double multichoose (const arma::ivec vals)
   {
     unsigned n = arma::accu(vals);
     double out = std::lgamma(n + 1);
