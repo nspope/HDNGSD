@@ -47,7 +47,7 @@ namespace utils
     return out;
   }
 
-  double multichoose (const arma::ivec vals)
+  double multichoose (const arma::uvec vals)
   {
     unsigned n = arma::accu(vals);
     double out = std::lgamma(n + 1);
@@ -1509,7 +1509,7 @@ struct Shf : public RcppParallel::Worker
       i = configurations.at(0,l);
       j = configurations.at(1,l);
       k = configurations.at(2,l);
-      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::ivec({int(chromosomes)-i-j-k, i, j, k}));
+      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::uvec({chromosomes-unsigned(i)-unsigned(j)-unsigned(k), unsigned(i), unsigned(j), unsigned(k)}));
     }
     out.clean(epsilon);
     out /= arma::accu(out);
@@ -1732,7 +1732,7 @@ struct ShfInvariant : public RcppParallel::Worker
       i = configurations.at(0,l);
       j = configurations.at(1,l);
       k = configurations.at(2,l);
-      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::ivec({int(chromosomes)-i-j-k, i, j, k}));
+      out.at(l) = buffer.at(i,j,k) / utils::multichoose(arma::uvec({chromosomes-unsigned(i)-unsigned(j)-unsigned(k), unsigned(i), unsigned(j), unsigned(k)}));
     }
     out.clean(epsilon);
     out /= arma::accu(out);
