@@ -109,6 +109,33 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// basis
+Rcpp::NumericVector basis(arma::cube hfs3d, arma::umat config0, arma::umat config1, arma::umat config2);
+RcppExport SEXP _haplodiplo_basis(SEXP hfs3dSEXP, SEXP config0SEXP, SEXP config1SEXP, SEXP config2SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< arma::cube >::type hfs3d(hfs3dSEXP);
+    Rcpp::traits::input_parameter< arma::umat >::type config0(config0SEXP);
+    Rcpp::traits::input_parameter< arma::umat >::type config1(config1SEXP);
+    Rcpp::traits::input_parameter< arma::umat >::type config2(config2SEXP);
+    rcpp_result_gen = Rcpp::wrap(basis(hfs3d, config0, config1, config2));
+    return rcpp_result_gen;
+END_RCPP
+}
+
+// cycle_cube
+arma::cube cycle_cube(const arma::cube& inp);
+RcppExport SEXP _haplodiplo_cycle_cube(SEXP inpSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::cube& >::type inp(inpSEXP);
+    rcpp_result_gen = Rcpp::wrap(cycle_cube(inp));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 RcppExport SEXP _rcpp_module_boot_Haplodiplo();
 
 static const R_CallMethodDef CallEntries[] = {
@@ -119,6 +146,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_haplodiplo_theta", (DL_FUNC) &_haplodiplo_theta, 2},
     {"_haplodiplo_slider", (DL_FUNC) &_haplodiplo_slider, 4},
     {"_haplodiplo_hfs1d", (DL_FUNC) &_haplodiplo_hfs1d, 2},
+    {"_haplodiplo_basis", (DL_FUNC) &_haplodiplo_basis, 4},
+    {"_haplodiplo_cycle_cube", (DL_FUNC) &_haplodiplo_cycle_cube, 1},
     {"_rcpp_module_boot_Haplodiplo", (DL_FUNC) &_rcpp_module_boot_Haplodiplo, 0},
     {NULL, NULL, 0}
 };

@@ -334,60 +334,198 @@ tests <- function()
   return(list(tglf=tglf, glf=glf, counts=counts, ploidy=ploidy))
 }
 
-.test_shfwindow <- function()
+.test_shfwindow <- function(seed=0, perr=0., depth=100, nsnp=10)
 {
   library(haplodiplo)
   library(Matrix)
 
-  # SNPs that are:
-  #   close
-  #   far
-  #   invariant
-  #   on different chromosomes
-  # Samples split across demes
-
-  # so: generate SNPs that are close in window 1 (chr 1)
-  # so: generate SNPs that are close in window 2 (chr 1)
-  # so: generate SNPs that are close in window 3 (chr 2)
-  # keep recombination rate constant (test RecombinationMap struct elsewhere)
-
   # high depth, haploid, no error
   ploidy <- c(1,1,1,1,1,1)
-  w1 <- .simulate_glf (seed=1, ploidy=ploidy, perr=0., pseg=0.25, nsnp=1000, depth=100)
-  w2 <- .simulate_glf (seed=2, ploidy=ploidy, perr=0., pseg=0.25, nsnp=1000, depth=100)
-  w3 <- .simulate_glf (seed=2, ploidy=ploidy, perr=0., pseg=0.25, nsnp=1000, depth=100)
-  p1 <- cbind(0, 1:1000, 0, 1)
-  p2 <- cbind(0, 50001:51000, 0, 1)
-  p3 <- cbind(1, 1:1000, 0, 1)
-  glf <- array(c(w1$glf, w2$glf, w3$glf), c(3,6,3000))
-  counts <- array(c(w1$counts, w2$counts, w3$counts), c(4,6,3000))
+  w1 <- .simulate_glf (seed=seed+1, ploidy=ploidy, perr=perr, pseg=0.25, nsnp=nsnp, depth=depth)
+  w2 <- .simulate_glf (seed=seed+2, ploidy=ploidy, perr=perr, pseg=0.25, nsnp=nsnp, depth=depth)
+  w3 <- .simulate_glf (seed=seed+3, ploidy=ploidy, perr=perr, pseg=0.25, nsnp=nsnp, depth=depth)
+  p1 <- cbind(0, 1:nsnp, 0, 1)
+  p2 <- cbind(0, 50001:(50000+nsnp), 0, 1)
+  p3 <- cbind(1, 1:nsnp, 0, 1)
+  glf <- array(c(w1$glf, w2$glf, w3$glf), c(3,6,nsnp*3))
+  counts <- array(c(w1$counts, w2$counts, w3$counts), c(4,6,nsnp*3))
   pos <- rbind(p1,p2,p3)
 
   Hd <- Haplodiplo$new(log(glf), counts, pos, ploidy)
   rmap <- cbind(c(0,0,0,1,1,1), c(0,40000,80000,0,40000,80000), c(1.,1.,1.,1.,1.,1), c(0.0,0.04,0.08,0.0,0.04,0.08))
   bins <- cbind(c(0.0),c(0.01)) #what if bin is empty; how does Shf struct do
 
-  #to check...count haplotypes in simulated data between w1 and w2 assuming a single deme
-  w1w2_1deme <- Hd$shfwindow(0:5, rmap, bins)
-  hfs1d(w1w2_1deme$SHF[[2]], w1w2_1deme$weights[[2]])
+  shfwindow <- Hd$shfwindow(0:5, rmap, bins, 0.5)
+  hfs_w1w2 <- hfs1d(shfwindow$SHF[[2]], shfwindow$weights[[2]])
+  hfs_w1w1_w2w2_w3w3 <- hfs1d(shfwindow$SHF[[1]], shfwindow$weights[[1]])
 
-  cglf_w1w2 <- array(0, c(7,7,7))
-  dimnames(cglf_w1w2) <- c("Ab", "aB", "AB")
-  for(k in 1:6)
-  {
-    bin <- c("Ab"=0, "aB"=0, "AB"=0)
-    for(i in 1:1000)
-      for(j in 1:1000)
+  #to check...count haplotypes in simulated data
+  thfs_w1w2 <- array(0, c(7,7,7))
+  for(i in 1:nsnp)
+    for(j in 1:nsnp)
+    {
+      bin <- c("Ab"=0, "aB"=0, "AB"=0)
+      for(k in 1:6)
       {
-        if(w1$tglf[1,k,i] & w2$tglf[3,k,i])
+        if(w1$tglf[3,k,i] & w2$tglf[1,k,j])
           bin["Ab"] = bin["Ab"] + 1
-        else if(w1$tglf[3,k,i] & w2$tglf[1,k,i])
+        else if(w1$tglf[1,k,i] & w2$tglf[3,k,j])
           bin["aB"] = bin["aB"] + 1
-        else if(w1$tglf[3,k,i] & w2$tglf[3,k,i])
+        else if(w1$tglf[3,k,i] & w2$tglf[3,k,j])
           bin["AB"] = bin["AB"] + 1
       }
-    cglf[bin[1],bin[2],bin[3]] <- cglf[bin[1],bin[2],bin[3]] + 1
-  }
+      thfs_w1w2[bin[1]+1,bin[2]+1,bin[3]+1] <- thfs_w1w2[bin[1]+1,bin[2]+1,bin[3]+1] + 1
+    }
 
+  thfs_w1w1 <- array(0, c(7,7,7))
+  for(i in 1:(nsnp-1))
+    for(j in (i+1):nsnp)
+    {
+      bin <- c("Ab"=0, "aB"=0, "AB"=0)
+      for(k in 1:6)
+      {
+        if(w1$tglf[3,k,i] & w1$tglf[1,k,j])
+          bin["Ab"] = bin["Ab"] + 1
+        else if(w1$tglf[1,k,i] & w1$tglf[3,k,j])
+          bin["aB"] = bin["aB"] + 1
+        else if(w1$tglf[3,k,i] & w1$tglf[3,k,j])
+          bin["AB"] = bin["AB"] + 1
+      }
+      thfs_w1w1[bin[1]+1,bin[2]+1,bin[3]+1] <- thfs_w1w1[bin[1]+1,bin[2]+1,bin[3]+1] + 1
+    }
+
+  thfs_w2w2 <- array(0, c(7,7,7))
+  for(i in 1:(nsnp-1))
+    for(j in (i+1):nsnp)
+    {
+      bin <- c("Ab"=0, "aB"=0, "AB"=0)
+      for(k in 1:6)
+      {
+        if(w2$tglf[3,k,i] & w2$tglf[1,k,j])
+          bin["Ab"] = bin["Ab"] + 1
+        else if(w2$tglf[1,k,i] & w2$tglf[3,k,j])
+          bin["aB"] = bin["aB"] + 1
+        else if(w2$tglf[3,k,i] & w2$tglf[3,k,j])
+          bin["AB"] = bin["AB"] + 1
+      }
+      thfs_w2w2[bin[1]+1,bin[2]+1,bin[3]+1] <- thfs_w2w2[bin[1]+1,bin[2]+1,bin[3]+1] + 1
+    }
+
+  thfs_w3w3 <- array(0, c(7,7,7))
+  for(i in 1:(nsnp-1))
+    for(j in (i+1):nsnp)
+    {
+      bin <- c("Ab"=0, "aB"=0, "AB"=0)
+      for(k in 1:6)
+      {
+        if(w3$tglf[3,k,i] & w3$tglf[1,k,j])
+          bin["Ab"] = bin["Ab"] + 1
+        else if(w3$tglf[1,k,i] & w3$tglf[3,k,j])
+          bin["aB"] = bin["aB"] + 1
+        else if(w3$tglf[3,k,i] & w3$tglf[3,k,j])
+          bin["AB"] = bin["AB"] + 1
+      }
+      thfs_w3w3[bin[1]+1,bin[2]+1,bin[3]+1] <- thfs_w3w3[bin[1]+1,bin[2]+1,bin[3]+1] + 1
+    }
+
+  thfs_w1w1_w2w2_w3w3 <- thfs_w1w1 + thfs_w2w2 + thfs_w3w3
+
+  thfs_w1w1_w2w2_w3w3_lin <- rep(0, ncol(shfwindow$config[[1]]))
+  thfs_w1w2_lin <- rep(0, ncol(shfwindow$config[[1]]))
+  for (i in 1:ncol(shfwindow$config[[1]]))
+  {
+    bin <- shfwindow$config[[1]][,i]
+    thfs_w1w1_w2w2_w3w3_lin[i] <- thfs_w1w1_w2w2_w3w3[bin[1]+1,bin[2]+1,bin[3]+1]
+    thfs_w1w2_lin[i] <- thfs_w1w2[bin[1]+1,bin[2]+1,bin[3]+1]
+  }
+  thfs_w1w1_w2w2_w3w3_lin <- thfs_w1w1_w2w2_w3w3_lin / sum(thfs_w1w1_w2w2_w3w3_lin)
+  thfs_w1w2_lin <- thfs_w1w2_lin / sum(thfs_w1w2_lin)
+  
+  par(mfrow=c(2,1))
+  plot(thfs_w1w1_w2w2_w3w3_lin, hfs_w1w1_w2w2_w3w3); abline(0,1)
+  plot(thfs_w1w2_lin, hfs_w1w2); abline(0,1)
+
+  #browser()
+
+  print("stop");
+}
+
+.test_robinsonhill <- function(seed=0)
+{
+  set.seed(seed)
+
+  # test single population
+  nsim <- 1e6
+  p0 <- runif(nsim, 0.2, 0.8)
+  q0 <- runif(nsim, 0.2, 0.8)
+  Fst <- 0.1
+  p <- q <- D <- f <- HFS <- list()
+  mn <- c(0.3, -0.2, 0.)
+  sd <- c(0.1, 0.001, 0.3)
+  chr <- c(4,5,6)
+  for(i in 1:3)
+  {
+    p[[i]] <- rbeta(nsim, (1-Fst)/Fst * p0, (1-Fst)/Fst * (1-p0) )
+    q[[i]] <- rbeta(nsim, (1-Fst)/Fst * q0, (1-Fst)/Fst * (1-q0) )
+    D[[i]] <- truncnorm::rtruncnorm(nsim, pmax(-p[[i]]*q[[i]], -(1-p[[i]])*(1-q[[i]])), pmin(p[[i]]*(1-q[[i]]), (1-p[[i]])*q[[i]]), mn[i], sd[i])
+    f[[i]] <- matrix(NA,4,nsim); rownames(f[[i]]) <- c("ab", "Ab", "aB", "AB")
+    f[[i]]["ab",] <- (1-p[[i]])*(1-q[[i]]) + D[[i]]
+    f[[i]]["Ab",] <- p[[i]]*(1-q[[i]]) - D[[i]]
+    f[[i]]["aB",] <- (1-p[[i]])*q[[i]] - D[[i]]
+    f[[i]]["AB",] <- p[[i]]*q[[i]] + D[[i]]
+    HFS[[i]] <- apply(f[[i]], 2, function(x) paste(rmultinom(1, chr[i], x),collapse=""))
+  }
+  HFS3d <- table(HFS[[1]], HFS[[2]], HFS[[3]])
+  HFS3d <- HFS3d/sum(HFS3d)
+
+  configs <- list()
+  for(i in 1:3)
+    configs[[i]] <- sapply(dimnames(HFS3d)[[i]], function(x) as.numeric(strsplit(x, "")[[1]][2:4]))
+
+  est <- rbind(basis(HFS3d, configs[[1]], configs[[2]], configs[[3]]),
+               basis(cycle_cube(HFS3d), configs[[2]], configs[[3]], configs[[1]]),
+               basis(cycle_cube(cycle_cube(HFS3d)), configs[[3]], configs[[1]], configs[[2]]))
+
+  tru <- rbind(
+         c("Di" = mean(D[[1]]), 
+           "DiDi" = mean(D[[1]]^2), 
+           "DiDj" = mean(D[[1]]*D[[2]]), 
+           "DiDk" = mean(D[[1]]*D[[3]]), 
+           "DiZii" = mean(D[[1]]*(1-2*p[[1]])*(1-2*q[[1]])),
+           "DiZij" = mean(D[[1]]*(1-2*p[[1]])*(1-2*q[[2]])),
+           "DiZji" = mean(D[[1]]*(1-2*p[[2]])*(1-2*q[[1]])),
+           "DiZik" = mean(D[[1]]*(1-2*p[[1]])*(1-2*q[[3]])),
+           "DiZki" = mean(D[[1]]*(1-2*p[[3]])*(1-2*q[[1]])),
+           "DiZjk" = mean(D[[1]]*(1-2*p[[2]])*(1-2*q[[3]])),
+           "DiZkj" = mean(D[[1]]*(1-2*p[[3]])*(1-2*q[[2]]))
+           ),
+         c("Di" = mean(D[[2]]), 
+           "DiDi" = mean(D[[2]]^2), 
+           "DiDj" = mean(D[[2]]*D[[3]]), 
+           "DiDk" = mean(D[[2]]*D[[1]]), 
+           "DiZii" = mean(D[[2]]*(1-2*p[[2]])*(1-2*q[[2]])),
+           "DiZij" = mean(D[[2]]*(1-2*p[[2]])*(1-2*q[[3]])),
+           "DiZji" = mean(D[[2]]*(1-2*p[[3]])*(1-2*q[[2]])),
+           "DiZik" = mean(D[[2]]*(1-2*p[[2]])*(1-2*q[[1]])),
+           "DiZki" = mean(D[[2]]*(1-2*p[[1]])*(1-2*q[[2]])),
+           "DiZjk" = mean(D[[2]]*(1-2*p[[3]])*(1-2*q[[1]])),
+           "DiZkj" = mean(D[[2]]*(1-2*p[[1]])*(1-2*q[[3]]))
+           ),
+         c("Di" = mean(D[[3]]), 
+           "DiDi" = mean(D[[3]]^2), 
+           "DiDj" = mean(D[[3]]*D[[1]]), 
+           "DiDk" = mean(D[[3]]*D[[2]]), 
+           "DiZii" = mean(D[[3]]*(1-2*p[[3]])*(1-2*q[[3]])),
+           "DiZij" = mean(D[[3]]*(1-2*p[[3]])*(1-2*q[[1]])),
+           "DiZji" = mean(D[[3]]*(1-2*p[[1]])*(1-2*q[[3]])),
+           "DiZik" = mean(D[[3]]*(1-2*p[[3]])*(1-2*q[[2]])),
+           "DiZki" = mean(D[[3]]*(1-2*p[[2]])*(1-2*q[[3]])),
+           "DiZjk" = mean(D[[3]]*(1-2*p[[1]])*(1-2*q[[2]])),
+           "DiZkj" = mean(D[[3]]*(1-2*p[[2]])*(1-2*q[[1]]))
+           ))
+  
+  plot(tru, est); abline(0,1)
+  
+  cat("stop\n")
 }
 
