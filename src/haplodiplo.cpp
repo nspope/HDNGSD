@@ -7,6 +7,15 @@
 //  -instead, put this functionality in a new method for calculating genotype probs
 //  -and have one method for Covar that always uses genotype probs
 
+// TODO: ShfWindow takes way to long to calculate variant site pairs. E.g. with 400K sites, it would take a very very very long time to iterate through all pairs. Alternative strategies:
+//    -if we have a hard distance threshold, we can ignore pairings beyond this threshold. This requires initial sorting based on pos (good idea in any case)
+//    -could maintain a list of "current distances" for all sites, that would be decremented uniformly as we move variant to variant. Then, for each variant, we can calculate # invariant by a simple query. The complexity is then nvariant * total rather than total^2.
+//    -combine these two ideas: track site, move forward and back until threshold reached
+//    -what about tracking boundary positions (in terms of indices). Basically:
+//       -move to next variant; set ideal boundaries as ibound[j] = cM[i] + bins[j]
+//       -take current boundary points, move right until cM[k] > ibound[j], set bound[j] = k-1
+//       -within slices defined by bound[j], get variants, count total number of sites
+
 #include <RcppArmadillo.h> 
 #include <RcppParallel.h> 
 #include <string>
@@ -207,7 +216,7 @@ struct GenotypeLikelihood
   unsigned chromosomes, samples; 
   size_t sites;
 
-  arma::Mat<short>  missing;
+  arma::Mat<short>  missing; // missing data pattern: samples x sites
   arma::Cube<float> like; // genotype likelihoods: 3 x samples x sites
   arma::Cube<short> cnts; // major/minor allele counts: 2 x samples x sites
   arma::Cube<float> post; // genotype probabilities: 3 x samples x sites
@@ -278,12 +287,12 @@ struct GenotypeLikelihood
 //    return st.st_size;   
 //  }
   
-  GenotypeLikelihood (const arma::cube& lmat, const arma::ucube& cmat, const arma::umat& pos, const arma::uvec& ploidy) 
-    : ploidy (ploidy)
+  GenotypeLikelihood (const arma::cube& lmat, const arma::ucube& cmat, const arma::umat& pmat, const arma::uvec& pldy) 
+    : ploidy (pldy)
     , like (arma::conv_to<arma::Cube<float>>::from(lmat))
     , cnts (2, cmat.n_cols, cmat.n_slices, arma::fill::zeros)
     , post (arma::size(like))
-    , pos (pos)
+    , pos (pmat)
   {
     if (arma::max(ploidy) > 2 || arma::min(ploidy) < 1)
       Rcpp::stop ("GLReader: allowed ploidy are (1, 2)\n");
@@ -340,7 +349,20 @@ struct GenotypeLikelihood
     //// set genotype probabilities to NaN
     //post.fill(arma::datum::nan);
 
+    // sort by chromosome then position
+    arma::uvec index = arma::regspace<arma::uvec>(0, sites-1);
+    std::sort (index.begin(), index.end(), 
+      [&](int i, int j) { 
+        return pos.at(0,i)==pos.at(0,j) ? pos.at(1,i)<pos.at(1,j) : pos.at(0,i)<pos.at(0,j); 
+      });
+    missing = missing.cols(index);
+    like    = like.slices(index);
+    cnts    = cnts.slices(index);
+    post    = post.slices(index);
+    pos     = pos.cols(index);
+
     std::fprintf(stderr, "[GLReader] Read %lu sites across %u chromosomes in %u samples\n", sites, chromosomes, samples);
+    std::fprintf(stderr, "[GLReader] NB: sites sorted according to linkage group then position\n");
   }
 
   size_t remove_sites (const arma::uvec& drop)
@@ -1977,29 +1999,38 @@ struct ShfWindow : public RcppParallel::Worker
       right_invariant.push_back(arma::zeros<arma::uvec>(number_variants));
       invariant.push_back(0);
     }
-
+        
     // in each window, assembly lists of sites to calculate SHF for and tallies of invariant sites
-    for (unsigned i=begin; i<end; ++i)
+    for (unsigned i = begin; i != end; ++i)
+    {
+      // moving right
+      unsigned bin = 0;
       for (unsigned j=i+1; j<GL.sites; ++j)
-        if (GL.pos.at(0,i) == GL.pos.at(0,j) && 
-            arma::is_finite(rcM.at(i)+rcM.at(j))) // on same chromosome with valid positions
+      {
+        if (GL.pos.at(0,j) != GL.pos.at(0,i)) // reached end of chromosome; exit
+          break;
+        double dis = std::fabs(rcM[j] - rcM[i]);
+        if (dis >= bins.at(bin,0)) // distance is greater that start of initial bin
         {
-          double dist = fabs(rcM.at(j) - rcM.at(i));
-          arma::uvec bin = arma::find(bins.col(0) <= dist && bins.col(1) > dist);
-
+          if (dis > bins.at(bin,1)) // distance exceeds end point of current bin
+            bin++;
+          if (bin == bins.n_rows) // past final bin
+            break;
           if (rvariant_index[i] && rvariant_index[j]) 
             // append to list of variant pairs in window
-            variant[bin[0]].insert_cols(variant[bin[0]].n_cols, arma::uvec({i, j}));
+            variant[bin].insert_cols(variant[bin].n_cols, arma::uvec({i, j}));
           else if (!rvariant_index[i] && rvariant_index[j]) 
             // increment # left-invariants of site j
-            left_invariant[bin[0]].at(rvariant_index[j]-1)++;
+            left_invariant[bin].at(rvariant_index[j]-1)++;
           else if (rvariant_index[i] && !rvariant_index[j]) 
             // increment # right-invariants of site i
-            right_invariant[bin[0]].at(rvariant_index[i]-1)++;
+            right_invariant[bin].at(rvariant_index[i]-1)++;
           else 
             // increment # invariant pairs
-            invariant[bin[0]]++;
+            invariant[bin]++;
         }
+      }
+    }
   }
 
   void join (const ShfWindow& rhs)
@@ -2016,15 +2047,14 @@ struct ShfWindow : public RcppParallel::Worker
   arma::mat buffer_bins (arma::mat bin)
   {
     if (bin.min() < 0.)
-      Rcpp::stop("[ShfWindow::buffer_bins] Bin positions cannot be negative and must have start and end");
+      Rcpp::stop("[ShfWindow::buffer_bins] Bin positions cannot be negative");
+    if (bin.n_cols != 2)
+      Rcpp::stop("[ShfWindow::buffer_bins] Bin matrix must have two columns (start and end in cM)");
+    for (unsigned i=0; i<bin.n_rows; ++i)
+      if (bin.at(i,0) >= bin.at(i,1))
+        Rcpp::stop("[ShfWindow::buffer_bins] Bin start points must be strictly less than end points");
 
-    // if necessary insert initial bin
-    if (bin.at(0,0) > 0.)
-      bin.insert_rows (0, arma::rowvec({0., bin.at(0,0)}));
-
-    // if necessary insert terminal bin
-    if (bin.at(bin.n_rows-1,1) < arma::datum::inf)
-      bin.insert_rows (bin.n_rows, arma::rowvec({bin.at(bin.n_rows-1,1), arma::datum::inf}));
+    // not a good idea to buffer with 0. and Inf.
 
     return bin;
   }

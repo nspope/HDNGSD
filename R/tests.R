@@ -353,7 +353,7 @@ tests <- function()
 
   Hd <- Haplodiplo$new(log(glf), counts, pos, ploidy)
   rmap <- cbind(c(0,0,0,1,1,1), c(0,40000,80000,0,40000,80000), c(1.,1.,1.,1.,1.,1), c(0.0,0.04,0.08,0.0,0.04,0.08))
-  bins <- cbind(c(0.0),c(0.01)) #what if bin is empty; how does Shf struct do
+  bins <- cbind(c(0.0,0.01),c(0.01,Inf)) #what if bin is empty; how does Shf struct do
 
   shfwindow <- Hd$shfwindow(0:5, rmap, bins, 0.5)
   hfs_w1w2 <- hfs1d(shfwindow$SHF[[2]], shfwindow$weights[[2]])
