@@ -3526,6 +3526,7 @@ struct SFS1d : public RcppParallel::Worker
       Rcpp::warning("[Saf::SFS1d] EM did not converge in maximum number of iterations");
 
     sfs.elem(arma::find(folder[2] == 0)).fill(arma::datum::nan);
+    sfs *= double(sites);
   }
 
   SFS1d (const SFS1d& rhs, RcppParallel::Split)
@@ -3776,6 +3777,7 @@ struct SFS2d : public RcppParallel::Worker
       Rcpp::warning("[Saf::SFS2d] EM did not converge in maximum number of iterations");
 
     sfs.elem(arma::find(folder[2] == 0)).fill(arma::datum::nan);
+    sfs *= double(sites);
   }
 
   SFS2d (const SFS2d& rhs, RcppParallel::Split)
@@ -4036,6 +4038,7 @@ struct SFS3d : public RcppParallel::Worker
       Rcpp::warning("[Saf::SFS3d] EM did not converge in maximum number of iterations");
 
     sfs.elem(arma::find(folder[2] == 0)).fill(arma::datum::nan);
+    sfs *= double(sites);
   }
 
   SFS3d (const SFS3d& rhs, RcppParallel::Split)
