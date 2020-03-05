@@ -3325,6 +3325,7 @@ struct Haplodiplo
     // TODO: this uses posterior. Won't do shit if posterior hasn't been calculated by callsnps
     // Could instead initially set posterior to likelihoods, corrected for ploidy (e.g. by GL.handler)
     // I'll need to think about whether this is desirable behavior or not.
+    // TODO: I think I did this^^^ ??
 
     arma::Mat<short> geno (GL.samples, GL.sites);
     geno.fill(9);
@@ -3417,6 +3418,81 @@ struct Haplodiplo
   {
     return GL.chromosomes;
   }
+
+  std::string vcfbody (const std::string outfile, const std::vector<std::string> chrnames, const bool impute = false, const bool append = false) const
+  {
+    // dump vcf body to file
+
+    if (chrnames.size() != arma::max(GL.pos.row(0)))
+      Rcpp::stop("[[Haplodiplo::vcfbody]] Wrong length for chromosome names");
+
+    std::ofstream out;
+    out.open(outfile, append ? std::ios::app : std::ios::out);
+
+    std::string acgtn = "ACGTN";
+
+    if (append)
+    {
+    //std::string out = "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT";
+    //for (unsigned i=0; i<GL.samples; ++i)
+    //  out += "\t" + smpnames[i];
+    //out += "\n";
+    }
+
+    // call SNPs
+    auto gno = genotypes (impute);
+
+    std::string gt, ad, gl;
+
+    for (unsigned i=0; i<GL.sites; ++i)
+    {
+      unsigned chr = GL.pos.at(0,i),
+               pos = GL.pos.at(1,i),
+               ref = GL.pos.at(2,i),
+               alt = GL.pos.at(3,i);
+
+      out << chrnames[chr] + "\t" + 
+                       pos + "\t" + 
+                       "." + "\t" + 
+                acgtn[ref] + "\t" + 
+                acgtn[alt] + "\t" +
+                       "." + "\t" +
+                       "." + "\t" +
+                       "." + "\t" +
+                       "GT:AD:GL";
+      for (unsigned j=0; j<GL.samples; ++j)
+      {
+        if (GL.ploidy[j] == 1)
+        {
+          if (gno.at(j,i) == 9)
+          {
+            gt = ".";
+            ad = ".,.";
+            gl = ".,.";
+          }
+          else
+          {
+            gt = std::to_string(gno.at(j,i));
+            ad = GL.cnt.at(ref,j,i) + "," + GL.cnt.at(alt,j,i);
+            gl = GL.lik.at(0,j,i) + "," + GL.lik.at(2,j,i);
+          }
+        } 
+        else 
+        {
+          if (gno.at(j,i) == 9)
+          {
+            gt = "./.";
+            ad = ".,.";
+            gl = ".,.,.";
+          }
+          ad = GL.cnt.at(ref,j,i) + "," + GL.cnt.at(alt,j,i);
+          gl = GL.lik.at(0,j,i) + "," + GL.lik.at(1,j,i) + "," + GL.lik.at(2,j,i);
+        }
+        out << "\t" + gt + ":" + ad + ":" + gl;
+      }
+      out << "\n";
+    }
+  }
 };
 
 RCPP_EXPOSED_CLASS_NODECL(Haplodiplo)
@@ -3464,6 +3540,7 @@ RCPP_MODULE(Haplodiplo) {
     .method("sites", &Haplodiplo::sites)
     .method("chromosomes", &Haplodiplo::chromosomes)
     .method("samples", &Haplodiplo::samples)
+    .method("vcfbody", &Haplodiplo::vcfbody)
     ;
 }
 
