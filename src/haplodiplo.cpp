@@ -15,6 +15,7 @@
 //       -move to next variant; set ideal boundaries as ibound[j] = cM[i] + bins[j]
 //       -take current boundary points, move right until cM[k] > ibound[j], set bound[j] = k-1
 //       -within slices defined by bound[j], get variants, count total number of sites
+// (this is partially complete??)
 
 #include <RcppArmadillo.h> 
 #include <RcppParallel.h> 
@@ -3452,7 +3453,7 @@ struct Haplodiplo
                alt = GL.pos.at(3,i);
 
       out << chrnames[chr] + "\t" + 
-                       pos + "\t" + 
+       std::to_string(pos) + "\t" + 
                        "." + "\t" + 
                 acgtn[ref] + "\t" + 
                 acgtn[alt] + "\t" +
@@ -3473,8 +3474,8 @@ struct Haplodiplo
           else
           {
             gt = std::to_string(gno.at(j,i));
-            ad = GL.cnt.at(ref,j,i) + "," + GL.cnt.at(alt,j,i);
-            gl = GL.lik.at(0,j,i) + "," + GL.lik.at(2,j,i);
+            ad = std::to_string(GL.cnts.at(ref,j,i)) + "," + std::to_string(GL.cnts.at(alt,j,i));
+            gl = std::to_string(GL.like.at(0,j,i)) + "," + std::to_string(GL.like.at(2,j,i));
           }
         } 
         else 
@@ -3485,8 +3486,8 @@ struct Haplodiplo
             ad = ".,.";
             gl = ".,.,.";
           }
-          ad = GL.cnt.at(ref,j,i) + "," + GL.cnt.at(alt,j,i);
-          gl = GL.lik.at(0,j,i) + "," + GL.lik.at(1,j,i) + "," + GL.lik.at(2,j,i);
+          ad = std::to_string(GL.cnts.at(ref,j,i)) + "," + std::to_string(GL.cnts.at(alt,j,i));
+          gl = std::to_string(GL.like.at(0,j,i)) + "," + std::to_string(GL.like.at(1,j,i)) + "," + std::to_string(GL.like.at(2,j,i));
         }
         out << "\t" + gt + ":" + ad + ":" + gl;
       }
