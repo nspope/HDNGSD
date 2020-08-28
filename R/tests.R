@@ -1,3 +1,6 @@
+# TESTS (TODO)
+#   -make proper unit tests! mark with DONE
+
 glf2array <- function(name, nsite, nsamp, isfloat=FALSE)
 {
   array(readBin(name, "double", size=if(isfloat) 4 else 8, n=3*nsamp*nsite), dim=c(3,nsamp,nsite))
@@ -224,6 +227,173 @@ tests <- function()
 
 }
 
+.test_admixture_hybrid <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"), figure = "test_admixture_hybrid.pdf", fst = 0.1)
+{
+  # DONE
+
+  test <- match.arg(test)
+
+  set.seed(seed)
+
+  num_samples <- 300
+  num_snps <- 100
+  num_clusters <- 3
+  num_demes <- 30
+  num_microsat <- 100
+  num_microsat_alleles <- 10
+  min_maf <- 0.25
+
+  if (test == "haploid")
+    ploidy <- rep(1, num_samples)
+  else if (test == "diploid")
+    ploidy <- rep(2, num_samples)
+  else if (test == "haplodiploid")
+    ploidy <- sample(1:2, num_samples, replace=TRUE)
+
+  deme <- sample(1:num_demes, num_samples, replace=TRUE)
+  stopifnot(length(unique(deme)) == num_demes)
+  D <- matrix(0, num_demes, num_samples)
+  for(i in 1:num_samples)
+    D[deme[i],i] <- 1
+
+  # simulate ancestry proportions
+  Q <- matrix(rgamma(num_clusters * num_demes, 1, 1), num_clusters, num_demes)
+  Q <- prop.table(Q, 2)
+
+  # simulate SNPs
+  anc <- runif(num_snps, min_maf, 1-min_maf)
+  F <- matrix(NA, num_clusters, num_snps)
+  for(i in 1:num_clusters)
+    F[i,] <- rbeta(num_snps, (1-fst)/fst * anc, (1-fst)/fst * (1-anc))
+  data <- .simulate_glf_admixture(Q %*% D, F, ploidy, seed = seed)
+  dropme <- colSums(data$gno) == 0 | colSums(data$gno) == sum(ploidy)
+  data$gno <- data$gno[,!dropme]
+  data$cnt <- data$cnt[,,!dropme]
+  data$glf <- data$glf[,,!dropme]
+  data$pos <- data$pos[!dropme,]
+  data$F   <- F <- data$F[,!dropme]
+  num_snps <- sum(!dropme)
+  anc <- anc[!dropme]
+
+  stopifnot(all(colSums(data$gno) > 0))
+  stopifnot(all(colSums(data$gno) < sum(ploidy)))
+
+  # simulate microsats (move to it's own function)
+  anc_ms <- matrix(rgamma(num_microsat_alleles*num_microsat, 1, 1), num_microsat_alleles, num_microsat)
+  anc_ms <- prop.table(anc_ms, 2)
+  gno_ms <- array(0, c(num_samples, num_microsat_alleles, num_microsat))
+  Fms <- array(NA, c(num_clusters, num_microsat_alleles, num_microsat))
+  Lms <- list()
+  for(i in 1:num_microsat)
+  {
+    for(j in 1:num_clusters)
+    {
+      Fms[j,,i] <- rgamma(num_microsat_alleles, (1-fst)/fst * anc_ms[,i], 1)
+      Fms[j,,i] <- Fms[j,,i]/sum(Fms[j,,i])
+    }
+    Pms <- t(Q %*% D) %*% Fms[,,i]
+    Lms[[i]] <- array(0, c(num_microsat_alleles, num_microsat_alleles, num_samples))
+    for(k in 1:num_samples)
+    {
+      g <- c()
+      for(a in 1:ploidy[k])
+      {
+        draw <- sample(1:num_microsat_alleles, 1, prob=Pms[k,])
+        g <- c(g, draw)
+        gno_ms[k,draw,i] <- gno_ms[k,draw,i] + 1
+      }
+      if(length(g)==1)
+        g <- c(g, g)
+      g <- g[order(g)]
+      Lms[[i]][g[1],g[2],k] <- 1
+    }
+  }
+
+  Qstart <- Q
+
+  Hd <- Haplodiplo$new(data$glf, data$cnt, data$pos, ploidy)
+  admix_hyb <- Hd$admixture_hybrid(1:num_snps-1, 1:num_samples-1, deme-1, Qstart, Lms)
+
+  F_msat <- array(NA, c(num_clusters,num_microsat_alleles,num_microsat))
+  for(i in 1:num_microsat) F_msat[,,i] <- t(admix_hyb$F_msat[[i]])
+
+  if (!is.null(figure))
+  {
+    pdf(figure, height=5, width=15)
+    par(mfrow=c(1,3))
+
+    # admixture coefficients for K-1 clusters
+    plot(admix_hyb$Q[-num_clusters,], Q[-num_clusters,], 
+         pch=19, xlab = "Admixture proportions (estimated)",
+         ylab = "Admixture proportions (true)")
+    abline(0, 1)
+
+    # SNP frequencies
+    plot(admix_hyb$F_snp, F, pch=19,
+         xlab = "SNP frequencies (estimated)",
+         ylab = "SNP frequencies (true)")
+    abline(0, 1)
+
+    # Msat frequencies
+    plot(F_msat[,-num_microsat_alleles,], Fms[,-num_microsat_alleles,],
+         pch=19, xlab = "Msat frequencies (estimated)",
+         ylab = "Msat frequencies (true)")
+    abline(0, 1)
+
+    dev.off()
+  }
+}
+
+.test_admixture <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"), fst = 0.1)
+{
+  # DONE
+
+  test <- match.arg(test)
+
+  set.seed(seed)
+
+  num_samples <- 50
+  num_snps <- 50000
+  num_clusters <- 3
+  min_maf <- 0.25
+  anc <- runif(num_snps, min_maf, 1-min_maf)
+
+  if (test == "haploid")
+    ploidy <- rep(1, num_samples)
+  else if (test == "diploid")
+    ploidy <- rep(2, num_samples)
+  else if (test == "haplodiploid")
+    ploidy <- sample(1:2, num_samples, replace=TRUE)
+
+  Q <- matrix(rgamma(num_clusters * num_samples, 1, 1), num_clusters, num_samples)
+  Q <- prop.table(Q, 2)
+  F <- matrix(NA, num_clusters, num_snps)
+  for(i in 1:num_clusters)
+    F[i,] <- rbeta(num_snps, (1-fst)/fst * anc, (1-fst)/fst * (1-anc))
+  data <- .simulate_glf_admixture(Q, F, ploidy, seed = seed)
+
+  dropme <- colSums(data$gno) == 0 | colSums(data$gno) == sum(ploidy)
+  data$gno <- data$gno[,!dropme]
+  data$cnt <- data$cnt[,,!dropme]
+  data$glf <- data$glf[,,!dropme]
+  data$pos <- data$pos[!dropme,]
+  data$F   <- F <- data$F[,!dropme]
+  num_snps <- sum(!dropme)
+  anc <- anc[!dropme]
+
+  stopifnot(all(colSums(data$gno) > 0))
+  stopifnot(all(colSums(data$gno) < sum(ploidy)))
+
+  Qstart <- Q
+
+  Hd <- Haplodiplo$new(data$glf, data$cnt, data$pos, ploidy)
+  admix <- Hd$admixture(1:num_snps-1, 1:num_samples-1, Qstart)
+
+  par(mfrow=c(1,2))
+  plot(admix$Q, Q); abline(0, 1)
+  plot(admix$F, F); abline(0, 1)
+}
+
 .test_shf <- function()
 {
   library(haplodiplo)
@@ -280,6 +450,55 @@ tests <- function()
   pos <- cbind(0, c(1,2,3), rep(0,3), rep(1,3))
   Hd <- Haplodiplo$new(log(glf), counts, pos, rep(1,4))
   Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
+}
+
+.simulate_glf_admixture <- function(Q, F, ploidy=rep(2, ncol(Q)), seed=0, err=0.01, depth=10)
+{
+  # simulate GLF under an admixture/structure-like model
+
+  set.seed(seed)
+
+  stopifnot(length(ploidy) == ncol(Q))
+
+  E <- t(Q) %*% F
+
+  glik <- function(cnt, err)
+    c(dbinom(cnt[1], sum(cnt), 1-err, log=TRUE), 
+      dbinom(cnt[1], sum(cnt), 0.5, log=TRUE), 
+      dbinom(cnt[1], sum(cnt), err, log=TRUE))
+
+  gno <- matrix(0,ncol(Q),ncol(F))
+  glf <- array(0, dim=c(3,ncol(Q),ncol(F)))
+  cnt <- array(0, dim=c(4,ncol(Q),ncol(F)))
+  for(i in 1:ncol(F))
+  {
+    for(j in 1:ncol(Q))
+    {
+      fr <- E[j,i]
+      dp <- rpois(1, depth)
+      if (ploidy[j]==2) 
+      {
+        gno[j,i] <- sample(0:2,1,prob=c((1-fr)^2,2*fr*(1-fr),fr^2))
+        if (gno[j,i] == 0) 
+          alt <- rbinom(1, dp, err)
+        else if (gno[j,i] == 1)
+          alt <- rbinom(1, dp, 0.5)
+        else
+          alt <- rbinom(1, dp, 1-err)
+      } else { 
+        gno[j,i] <- sample(0:1,1,prob=c((1-fr),fr))
+        if (gno[j,i] == 0) 
+          alt <- rbinom(1, dp, err)
+        else
+          alt <- rbinom(1, dp, 1-err)
+      }
+      ref <- dp - alt
+      cnt[,j,i] <- c(ref,alt,0,0)
+      glf[,j,i] <- glik(cnt[,j,i], err)
+    }
+  }
+  pos <- cbind(0, 1:ncol(F)-1, 0, 1)
+  return(list(gno=gno, glf=glf, cnt=cnt, pos=pos, Q=Q, F=F, ploidy=ploidy))
 }
 
 .simulate_glf <- function(seed=0, nsnp=1000, ploidy=c(1,2,1,2), pseg=0.1, perr=0.01,depth=10)

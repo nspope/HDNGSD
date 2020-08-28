@@ -10,16 +10,26 @@ struct Microsat
   const arma::cube L;
   arma::mat oldfreq, freq, hwe, counts;
 
+  const arma::uword num_alleles, num_samples, num_clusters;
+  arma::vec loglikelihood;
+
   Microsat (const GenotypeLikelihood& GL, const arma::uvec samples, arma::mat Qstart, const arma::cube like)
     : GL (GL),
     , sample_index (samples)
     , L (like)
+    , num_alleles (like.n_rows)
+    , num_samples (samples.n_elem)
+    , num_clusters (Qstart.n_rows)
+    , loglikelihood (samples.n_elem)
   {
-    if (sample_index.n_elem != L.n_slices)
+    if (Qstart.n_cols != num_samples             ||
+        GL.samples    != like.n_slices           ||
+        like.n_cols   != num_alleles             ||
+        arma::max(sample_index) >= like.n_slices )
       Rcpp::stop ("[Microsat] Dimension mismatch");
 
     Qstart.each_col([](arma::vec& x) { x /= arma::accu(x); });
-    freq = arma::randu<arma::mat>(L.n_rows, Qstart.n_rows);
+    freq = arma::randu<arma::mat>(num_alleles, num_clusters);
     freq.each_col([](arma::vec& x) { x /= arma::accu(x); });
     oldfreq = freq;
     hwe = expected_frequencies(Qstart, freq);
@@ -28,49 +38,53 @@ struct Microsat
 
   double EM (const arma::mat& Q, arma::mat& Qup)
   {
+    if (Q.n_cols   != num_samples  ||
+        Q.n_rows   != num_clusters ||
+        Qup.n_cols != num_samples  ||
+        Qup.n_rows != num_clusters )
+      Rcpp::stop ("[Microsat] Dimension mismatch");
+
     oldfreq = freq;
     hwe = expected_frequencies(Q, oldfreq);
     counts = expected_counts(Q, oldfreq, hwe);
     freq = update_frequencies(Q, oldfreq, hwe, counts);
     Qup += update_admixture(Q, oldfreq, hwe, counts);
 
-    return loglik (Q, oldfreq, hwe);
+    loglikelihood = loglik(Q, oldfreq, hwe);
+
+    return arma::accu(loglikelihood);
   }
 
   arma::mat expected_frequencies (const arma::mat& Q, const arma::mat& F)
   {
-    // compute new frequencies
-    if (Q.n_cols != sample_index.n_elem)
-      Rcpp::stop ("[Microsat::expected_frequencies] Dimension mismatch");
-  
     // compute HWE frequencies per sample (input const Q&)
-    arma::mat out (F.n_rows, Q.n_cols, arma::fill::zeros);
-    for (unsigned s=0; s<L.n_slices; ++s)
-      for (unsigned k=0; k<Q.n_cols; ++k)
-        for (unsigned i=0; i<F.n_rows; ++i)
+    arma::mat out (num_alleles, num_samples, arma::fill::zeros);
+    for (unsigned s=0; s<num_samples; ++s) //samples
+      for (unsigned k=0; k<num_clusters; ++k) //clusters
+        for (unsigned i=0; i<num_alleles; ++i) //alleles
           out.at(i,s) += Q.at(k,s) * F.at(i,k);
+
     return out;
   }
   
   arma::mat expected_counts (const arma::mat& Q, const arma::mat& F, const arma::mat& S)
   {
-    // compute new frequencies
-
     // posterior expectation of allele counts for each sample
-    arma::mat out (F.n_rows, L.n_slices, arma::fill::zeros);
-    for (unsigned s=0; s<L.n_slices; ++s)
+    arma::mat out (num_alleles, num_samples, arma::fill::zeros);
+    for (unsigned s=0; s<num_samples; ++s) //samples
     {
       double den = 0., p = 0.;
-      if (GL.ploidy(sample_index[s])==2)
+      arma::uword s2 = sample_index[s];
+      if (GL.ploidy.at(s2)==2)
       {
-        for (unsigned i=0; i<F.n_rows; ++i)
+        for (unsigned i=0; i<num_alleles; ++i) //alleles
         {
-          p = L.at(i,i,s) * std::pow(S.at(i,s), 2);
+          p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
           den += p;
           out.at(i,s) += 2. * p;
-          for (unsigned j=i+1; j<F.n_rows; ++j)
+          for (unsigned j=i+1; j<num_alleles; ++j) //alleles again
           {
-            p = L.at(i,j,s) * S.at(j,s) * S.at(i,s);
+            p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
             den += 2. * p;
             out.at(i,s) += p;
             out.at(j,s) += p;
@@ -79,9 +93,9 @@ struct Microsat
       } 
       else 
       {
-        for (unsigned i=0; i<F.n_rows; ++i)
+        for (unsigned i=0; i<num_alleles; ++i) //alleles
         {
-          p = L.at(i,i,s) * S.at(i,s);
+          p = L.at(i,i,s2) * S.at(i,s);
           den += p;
           out.at(i,s) += p;
         }
@@ -93,14 +107,11 @@ struct Microsat
   
   arma::mat update_admixture (const arma::mat& Q, const arma::mat& F, const arma::mat& S, const arma::mat& E)
   {
-    // contribute to admixture coeff update (input Qup&, const Q&)
-    if (Q.n_cols != F.n_cols || Q.n_rows != E.n_rows)
-      Rcpp::stop ("[Microsat::update_admixture] Dimension mismatch");
-  
+    // contribution to admixture coeff update (input Qup&, const Q&)
     Qup = arma::zeros<arma::mat>(arma::size(Q));
-    for (unsigned s=0; s<Q.n_cols; ++s)
-      for (unsigned k=0; k<Q.n_rows; ++k)
-        for (unsigned i=0; i<E.n_rows; ++i)
+    for (unsigned s=0; s<num_samples; ++s) // samples
+      for (unsigned k=0; k<num_clusters; ++k) // clusters
+        for (unsigned i=0; i<num_alleles; ++i) // alleles
           Qup.at(k,s) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
     return Qup;
   }
@@ -108,75 +119,74 @@ struct Microsat
   arma::mat update_frequencies (const arma::mat& Q, const arma::mat& F, const arma::mat& S, const arma::mat& E)
   {
     // compute new frequencies (input const Q&)
-    if (Q.n_cols != F.n_cols || Q.n_rows != E.n_rows)
-      Rcpp::stop ("[Microsat::update_frequencies] Dimension mismatch");
-  
     arma::mat Fup = arma::zeros<arma::mat>(arma::size(F));
-    for (unsigned k=0; k<F.n_cols; ++k)
+    for (unsigned k=0; k<num_clusters; ++k) // clusters
     {
-      arma::vec A (F.n_rows, arma::fill::zeros);
-      for (unsigned i=0; i<F.n_rows; ++i)
+      arma::vec A (num_alleles, arma::fill::zeros);
+      for (unsigned i=0; i<num_alleles; ++i)
       {
-        for (unsigned s=0; s<Q.n_cols; ++s)
+        for (unsigned s=0; s<num_samples; ++s)
         {
           A.at(i) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
         }
       }
       Fup.col(k) = A / arma::accu(A);
     }
+
     return Fup;
   }
 
-  double loglik (const arma::mat& Q, const arma::mat& F, const arma::mat& S)
+  arma::vec loglik (const arma::mat& Q, const arma::mat& F, const arma::mat& S)
   {
-    // loglikelihood
-    double ll = 0.;
-    for (unsigned s=0; s<L.n_slices; ++s)
+    // calculate per-sample loglikelihood
+    arma::vec ll (num_samples);
+
+    for (unsigned s=0; s<num_samples; ++s)
     {
       double den = 0., p = 0.;
-      if (GL.ploidy(sample_index[s])==2)
+      arma::uword s2 = sample_index[s];
+      if (GL.ploidy.at(s2)==2)
       {
-        for (unsigned i=0; i<F.n_rows; ++i)
+        for (unsigned i=0; i<num_alleles; ++i)
         {
-          p = L.at(i,i,s) * std::pow(S.at(i,s), 2);
+          p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
           den += p;
-          for (unsigned j=i+1; j<F.n_rows; ++j)
+          for (unsigned j=i+1; j<num_alleles; ++j)
           {
-            p = L.at(i,j,s) * S.at(j,s) * S.at(i,s);
+            p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
             den += 2. * p;
           }
         }
       } 
       else 
       {
-        for (unsigned i=0; i<F.n_rows; ++i)
+        for (unsigned i=0; i<num_alleles; ++i)
         {
-          p = L.at(i,i,s) * S.at(i,s);
+          p = L.at(i,i,s2) * S.at(i,s);
           den += p;
         }
       }
+      ll[s] = den;
     }
     return ll;
   }
 };
 
-struct AdmixtureMkII : public RcppParallel::Worker
+struct AdmixtureMsat : public RcppParallel::Worker
 { 
-  //TODO for now, no acceleration for msats
-  
   public:
   const GenotypeLikelihood &GL;				// contains likelihoods, ploidy, dimensions
   const arma::uvec sample_index;      // only use these samples
   const unsigned K;   								// number of clusters, number of chromosomes to hold out
-  arma::mat Qmat, Fmat, loglik;       // admixture, frequencies, per site loglik and cross-validation
+  arma::mat Qmat, Fmat, loglik;       // admixture, frequencies, per site loglik
   arma::cube Acoef, Bcoef;						// per-site coefficients (could move to private eventually)
-  std::vector<Microsat> msat;         // microsatellite loci
+  std::vector<Microsat> Msat;         // microsatellite loci
 	double loglikelihood = 0.;					// total loglikelihood
   unsigned iter = 0;
 
   private:
   bool   acceleration = true; // use EM acceleration?
-  double errtol = 1e-8;// not using dynamic bounds
+  double errtol = 1e-8; // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
 
 	// references for slaves
@@ -187,6 +197,7 @@ struct AdmixtureMkII : public RcppParallel::Worker
 
 	//temporaries
 	arma::mat Q0, Q1, Q2, F0, F1, F2, Qd1, Qd2, Qd3, Fd1, Fd2, Fd3;
+  std::vector<arma::mat> msF0, msF1, msFd1, msF2, msFd2, msFd3;
 
   public:
   AdmixtureMkII (const GenotypeLikelihood& GL, const arma::uvec samples, const arma::mat Qstart, const std::vector<arma::cube> microsat)
@@ -221,13 +232,13 @@ struct AdmixtureMkII : public RcppParallel::Worker
   {
 		// everything here should interface with originals not references
     if (K < 1)
-      Rcpp::stop ("Admixture: must have at least one cluster");
+      Rcpp::stop ("[AdmixtureMsat] Must have at least one cluster");
     if (K > 999)
-      Rcpp::stop ("Admixture: number of clusters capped at 999");
+      Rcpp::stop ("[AdmixtureMsat] Number of clusters capped at 999");
     if (arma::max(sample_index) >= GL.samples)
-      Rcpp::stop ("Admixture: invalid entries in sample index");
+      Rcpp::stop ("[AdmixtureMsat] Invalid entries in sample index");
     if (Qstart.n_rows != Qmat.n_rows || Qstart.n_cols != Qmat.n_cols)
-      Rcpp::stop ("Admixture: starting values for Q are of wrong dimension");
+      Rcpp::stop ("[AdmixtureMsat] Starting values for Q are of wrong dimension");
 
     const unsigned maxiter = 5000;
 
@@ -238,20 +249,27 @@ struct AdmixtureMkII : public RcppParallel::Worker
     Fmat = arma::clamp(Fmat, errtol, 1.-errtol);
 
     for (auto ms : microsat)
-      msat.emplace_back(GL, sample_index, Qmat, ms);
+    {
+      Msat.emplace_back(GL, sample_index, Qmat, ms);
+      msF0.push_back(arma::zeros<arma::mat>(L.n_rows, Qmat.n_rows));
+      msF1.push_back(arma::zeros<arma::mat>(L.n_rows, Qmat.n_rows));
+      msF2.push_back(arma::zeros<arma::mat>(L.n_rows, Qmat.n_rows));
+      msFd1.push_back(arma::zeros<arma::mat>(L.n_rows, Qmat.n_rows));
+      msFd2.push_back(arma::zeros<arma::mat>(L.n_rows, Qmat.n_rows));
+      msFd3.push_back(arma::zeros<arma::mat>(L.n_rows, Qmat.n_rows));
+    }
 		
 		for (iter=0; iter<maxiter; ++iter)
     {
-      bool converged = EMaccel(Qmat, Fmat);
-      //TODO make mutables clearer; should always be passed as arguments (e.g. loglikelihood, cvscore!
+      bool converged = EMaccel(Qmat, Fmat, Msat);
       if((iter+1) % 10 == 0) 
-        std::cout << "Admixture: iteration " << iter+1 << ", loglik = " << loglikelihood << std::endl;
+        std::cout << "[AdmixtureMsat] Iteration " << iter+1 << ", loglik = " << loglikelihood << std::endl;
 			if(converged)
 				break;
     }
   
 		if (iter == maxiter)
-			Rcpp::warning("Admixture: did not converge in maximum number of iterations");
+			Rcpp::warning("[AdmixtureMsat] did not converge in maximum number of iterations");
   }
 
   Admixture (const Admixture& rhs, RcppParallel::Split)
@@ -266,7 +284,6 @@ struct AdmixtureMkII : public RcppParallel::Worker
     , rBcoef (rhs.rBcoef)
   {}
 
-  // TODO: I would prefer to simplify so that only arguments are mutables or indices (e.g. get rid of Q/F in below)
   void Diploid (arma::cube& A, arma::cube& B, arma::mat& ll, const size_t i, const unsigned j)
   {
     // everything in here should interact with references
@@ -324,7 +341,6 @@ struct AdmixtureMkII : public RcppParallel::Worker
     // every large container passed should be a reference
     for (size_t i=start; i!=end; ++i)
     {
-      //TODO handle totally missing data? Or totally fixed sites? Necessary?
       for (unsigned j=0; j<rsample_index.n_elem; ++j)
       {
         unsigned j2 = rsample_index[j];
@@ -336,38 +352,40 @@ struct AdmixtureMkII : public RcppParallel::Worker
     }
   }
 
-  double EM (arma::mat& Q, arma::mat& F)
+  double EM (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
   {
-    // this should interact with the original containers
-    // this uses Qmat/Fmat in to calculate likelihood updates, and stores the output in Q/F
-
     loglik.zeros();
     Acoef.zeros();
     Bcoef.zeros();
 
-    double msloglik = 0.;
-    arma::mat msQ = arma::zeros<arma::mat>(arma::size(Q));
-    for (auto ms : msat)
-      msloglik += ms.EM(Qmat, msQ);
+    arma::mat tmp_Q      = arma::zeros<arma::mat>(arma::size(Q));
+    double    tmp_loglik = 0.;
+    for (auto& ms : Ms)
+      tmp_loglik += ms.EM(Qmat, tmp_Q);
 
     RcppParallel::parallelFor(0, GL.sites, *this); 
     //(*this)(0, GL.sites);
 
     F = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
-    Q = arma::sum(Acoef, 2) + arma::sum(Bcoef, 2) + msQ;
+    Q = arma::sum(Acoef, 2) + arma::sum(Bcoef, 2) + tmp_Q;
     Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
 
-    return arma::accu(loglik) + msloglik; 
+    return arma::accu(loglik) + tmp_loglik;
   }
 
-  void project (arma::mat& Q, arma::mat& F)
+  void project (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
   {
+    for (auto& ms : Ms)
+    {
+      ms.freq = arma::clamp(ms.freq, errtol, 1.-errtol);
+      ms.freq.each_col([](arma::vec& x) { x /= arma::accu(x); });
+    }
     F = arma::clamp(F, errtol, 1.-errtol);
     Q = arma::clamp(Q, errtol, arma::datum::inf);
     Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
   }
 
-  bool EMaccel (arma::mat& Q, arma::mat& F)
+  bool EMaccel (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
   {
     // this should interact with the original containers
     // this uses Qmat/Fmat in to calculate likelihood updates, and stores the output in Q/F
@@ -378,13 +396,21 @@ struct AdmixtureMkII : public RcppParallel::Worker
     double ll0 = loglikelihood;
 
     Q0 = Q;	F0 = F;
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+      msF0[locus] = Ms[locus].freq;
 
 		// first secant condition
-    loglikelihood = EM (Q, F); project (Q, F);
+    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
 	  Q1  = Q;		  	F1  = F;
 		Qd1 = Q - Q0;   Fd1 = F - F0;
     double ll1 = loglikelihood;
 	  double sr2 = arma::accu(arma::pow(Qd1,2)) + arma::accu(arma::pow(Fd1,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msF1[locus]   = Ms[locus].freq;
+      msFd1[locus]  = msF1[locus] - msF0[locus];
+      sr2          += arma::accu(arma::pow(msFd1[locus],2));
+    }
 	  if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
 			return true;
     
@@ -392,26 +418,39 @@ struct AdmixtureMkII : public RcppParallel::Worker
       return false;
 
 		// second secant condition
-    loglikelihood = EM (Q, F); project (Q, F);
+    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
 	  Q2  = Q;		  	F2  = F;
 		Qd2 = Q - Q1;   Fd2 = F - F1;
     double em  = loglikelihood;
 	  double sq2 = arma::accu(arma::pow(Qd2,2)) + arma::accu(arma::pow(Fd2,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msF2[locus]   = Ms[locus].freq;
+      msFd2[locus]  = msF2[locus] - msF1[locus];
+      sq2          += arma::accu(arma::pow(msFd2[locus],2));
+    }
 	  if (!arma::is_finite(sq2) || fabs(em - ll1) < tol || sqrt(sq2) < tol)
 			return true;
 
 		// the magic happens
 		Qd3 = Qd2 - Qd1; Fd3 = Fd2 - Fd1;
 	  double sv2 = arma::accu(arma::pow(Qd3,2)) + arma::accu(arma::pow(Fd3,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msFd3[locus]  = msFd2[locus] - msFd1[locus];
+      sv2          += arma::accu(arma::pow(msFd3[locus],2));
+    }
 	  double alpha = sqrt(sr2/sv2);
 		alpha = std::max(stepmin, std::min(stepmax, alpha));
 
     F = F0 + 2.*alpha*Fd1 + alpha*alpha*Fd3;
     Q = Q0 + 2.*alpha*Qd1 + alpha*alpha*Qd3;
-    project (Q, F);
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+      Ms[locus].freq = msF0[locus] + 2.*alpha*msFd1[locus] + alpha*alpha*msFd3[locus];
+    project (Q, F, Ms);
 
 		// stabilize
-		loglikelihood = EM (Q, F); project (Q, F);
+		loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
 
     // revert to simple EM iteration if loglikelihood has decreased after acceleration
     if (!arma::is_finite(loglikelihood) || loglikelihood < em)
@@ -419,11 +458,46 @@ struct AdmixtureMkII : public RcppParallel::Worker
       loglikelihood = em;
       Q = Q2;
       F = F2;
+      for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+        Ms[locus].freq = msF2[locus];
     }
 
 		if (alpha == stepmax)
 			stepmax *= mstep;
 		
 		return false;
+  }
+
+  // getters 
+
+  std::vector<arma::mat> microsat_frequencies (void) const
+  {
+    std::vector<arma::mat> out;
+    for (auto& ms : Msat)
+      out.push_back(ms.freq);
+    return out;
+  }
+
+  arma::mat microsat_loglikelihood (void) const
+  {
+    arma::mat out (sample_index.n_elem, Msat.size());
+    for (arma::uword locus = 0; locus < Msat.size(); ++locus)
+      out.col(locus) = Msat[locus].loglikelihood;
+    return out;
+  }
+
+  arma::mat snp_frequencies (void) const
+  {
+    return F;
+  }
+
+  arma::mat snp_loglikelihood (void) const
+  {
+    return loglik;
+  }
+
+  arma::mat admixture_proportions (void) const
+  {
+    return Q;
   }
 };

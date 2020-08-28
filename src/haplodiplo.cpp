@@ -202,6 +202,143 @@ namespace utils
 
 }
 
+// I think I only want this if computing genotype likelihoods for MA loci
+struct MultiAllelicGenotypeLikelihood
+{
+  const arma::uvec ploidy;
+  const unsigned samples;
+  unsigned loci;
+
+  std::vector<arma::cube> like;
+  arma::umat pos;
+
+  MultiAllelicGenotypeLikelihood (const arma::uvec ploidy)
+    : ploidy (ploidy)
+    , samples (ploidy.n_elem)
+    , like (0)
+    , pos (0, 4)
+    , loci (0)
+  {}
+
+  void add_locus (unsigned chrom, size_t start, size_t end, arma::imat genotypes, arma::double dropout, arma::double err)
+  {
+    if (genotypes.n_cols != samples || 
+        genotypes.n_rows != 2       )
+      Rcpp::stop("[MultiAllelicGenotypeLikelihood::add_locus] Dimension mismatch");
+
+    if (err < 0 || err > 1)
+      Rcpp::stop("[MultiAllelicGenotypeLikelihood::add_locus] Genotyping error rate must be in [0,1]");
+    if (dropout < 0 || dropout > 1)
+      Rcpp::stop("[MultiAllelicGenotypeLikelihood::add_locus] Dropout error rate must be in [0,1]");
+    
+    // convert genotypes to unique codes
+    std::vector<unsigned> nonmissing;
+    for (unsigned i=0; i<samples; ++i)
+    {
+      if (genotypes.at(i,0) <= 0 && genotypes.at(i,1) <= 0)
+      {
+        genotypes.at(i,0) = -1;
+        genotypes.at(i,1) = -1;
+      } 
+      else if (genotypes.at(i,0) > 0 && genotypes.at(i,1) <= 0)
+      {
+        if (ploidy.at(i) != 1)
+          Rcpp::stop("[MultiAllelicGenotypeLikelihood::add_locus] One genotype must be missing (coded as 0) for haploids");
+        genotypes.at(i,1) = -1;
+        nonmissing.push_back(genotypes.at(i,0));
+      }
+      else if (genotypes.at(i,0) <= 0 && genotypes.at(i,1) > 0)
+      {
+        if (ploidy.at(i) != 1)
+          Rcpp::stop("[MultiAllelicGenotypeLikelihood::add_locus] One genotype must be missing (coded as 0) for haploids");
+        genotypes.at(i,0) = genotypes.at(i,1);
+        genotypes.at(i,1) = -1;
+        nonmissing.push_back(genotypes.at(i,0));
+      }
+      else
+      {
+        nonmissing.push_back(genotypes.at(i,0));
+      }
+    }
+
+    arma::uvec unique_alleles = arma::unique(arma::uvec(nonmissing));
+    unsigned alleles = unique_alleles.n_elem;
+    for (unsigned i = 0; i < alleles; ++i)
+      genotypes.replace(unique_alleles[i], i);
+
+    // calculate likelihoods
+    arma::cube likelihood (alleles, alleles, samples, arma::fill::zeros);
+    for (unsigned i=0; i<samples; ++i)
+      if (ploidy.at(i) == 1)
+      {
+        if (genotypes.at(i,0) >= 0)
+          likelihood.slice(i) = wang_error_model_haploid(alleles, genotypes.at(i,0), err);
+        else
+          likelihood.slice(i).fill(1./double(alleles));
+      }
+      else if (ploidy.at(i) == 2)
+      {
+        if (genotypes.at(i,0) >= 0)
+          likelihood.slice(i) = wang_error_model_diploid(alleles, genotypes.at(i,0), genotypes.at(i,1), dropout, err);
+        else
+          likelihood.slice(i).fill(1./(double(alleles)*double(alleles)));
+      }
+    
+    // store
+    like.push_back(likelihood);
+    pos = arma::join_rows(pos, arma::rowvec({chrom, start, end, alleles}));
+    loci++;
+  }
+
+  arma::mat wang_error_model_haploid (const unsigned n, const unsigned a1, const double E2)
+  {
+    double e2 = E2/(n - 1);
+    arma::mat L (n, n, arma::fill::zeros);
+
+    for (unsigned i=0; i<n; ++i)
+      L.at(i,i) = ??;
+
+    return L;
+  }
+
+  arma::mat wang_error_model_diploid (const unsigned k, const unsigned u, const unsigned v, const double E1, const double E2)
+  {
+    double e1 = E1/(1. + E1),
+           e2 = E2/(double(k) - 1.);
+
+    arma::mat L (k, k, arma::fill::zeros);
+
+    double l;
+    for (unsigned w=0; w<k; ++w)
+      for (unsigned x=w; x<k; ++x)
+      {
+        if (w == x)
+        {
+          if (u == v && v == w)
+          {}
+          else if ((u == w && v != w) || (v == w && u != w))
+          {}
+          else
+          {}
+        }
+        else
+        {
+          if ((u == w && v == x) || (u == x && v == w))
+          {}
+          else if ((u == v && v == w) || (u == v && v == x))
+          {}
+          else if (u != w && u != x && v != w && v != x)
+          {}
+          else
+          {}
+        }
+        L.at(i,j) = L.at(j,i) = l;
+      }
+
+    return L;
+  }
+};
+
 struct GenotypeLikelihood
 {
   // Read in beagle binary format >like
@@ -851,20 +988,11 @@ struct Frequencies : public RcppParallel::Worker
 };
 
 struct Admixture : public RcppParallel::Worker
-{ //DONE 
-  //slash not DONE. I think I need factor of 0.5 for haploid updates. Why? Not sure. Bummer. EM is annoying!<<did this
-
-  // same as NGSadmix but allows for haplodiploid samples
-  //
-  // edge case where all samples are missing at a site is probably not working
-  //
-  // hmm, in NGSadmix they do not skip missing sites. Instead they integrate over them.
-  // I made that change...
-
+{ 
   public:
   const GenotypeLikelihood &GL;				// contains likelihoods, ploidy, dimensions
-  const arma::uvec site_index, 			  // only use these sites
-                   sample_index;
+  const arma::uvec sample_index,      // only use these samples
+                   site_index; 			  // only use these sites
   const unsigned K;   								// number of clusters, number of chromosomes to hold out
   arma::mat Qmat, Fmat, loglik;       // admixture, frequencies, per site loglik and cross-validation
   arma::cube Acoef, Bcoef;						// per-site coefficients (could move to private eventually)
@@ -872,8 +1000,8 @@ struct Admixture : public RcppParallel::Worker
   unsigned iter = 0;
 
   private:
-  bool   acceleration = true; // use EM acceleration?
-  double errtol = 1e-8;// not using dynamic bounds
+  bool   acceleration = false;       // use EM acceleration?
+  double errtol = 1e-8;              // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
 
 	// references for slaves
@@ -920,17 +1048,18 @@ struct Admixture : public RcppParallel::Worker
   {
 		// everything here should interface with originals not references
     if (K < 1)
-      Rcpp::stop ("Admixture: must have at least one cluster");
+      Rcpp::stop ("[Admixture] must have at least one cluster");
     if (K > 999)
-      Rcpp::stop ("Admixture: number of clusters capped at 999");
+      Rcpp::stop ("[Admixture] number of clusters capped at 999");
     if (arma::max(site_index) >= GL.sites)
-      Rcpp::stop ("Admixture: invalid entries in site index");
+      Rcpp::stop ("[Admixture] Invalid entries in site index");
     if (arma::max(sample_index) >= GL.samples)
-      Rcpp::stop ("Admixture: invalid entries in sample index");
+      Rcpp::stop ("[Admixture] Invalid entries in sample index");
     if (Qstart.n_rows != Qmat.n_rows || Qstart.n_cols != Qmat.n_cols)
-      Rcpp::stop ("Admixture: starting values for Q are of wrong dimension");
+      Rcpp::stop ("[Admixture] Starting values for Q are of wrong dimension");
 
     const unsigned maxiter = 5000;
+
     Qmat = Qstart;
     Qmat.each_col([](arma::vec& x) { x /= arma::accu(x); });
 
@@ -942,13 +1071,13 @@ struct Admixture : public RcppParallel::Worker
       bool converged = EMaccel(fixQ ? Q0 : Qmat, Fmat); // inputs get updated, but only Qmat is used in likelihood calc (Q0 is like /dev/null)
       //TODO make mutables clearer; should always be passed as arguments (e.g. loglikelihood, cvscore!
       if((iter+1) % 10 == 0) 
-        std::cout << "Admixture: iteration " << iter+1 << ", loglik = " << loglikelihood << std::endl;
+        fprintf(stderr, "[Admixture] Iteration %u, loglik = %f\n", iter+1, loglikelihood);
 			if(converged)
 				break;
     }
   
 		if (iter == maxiter)
-			Rcpp::warning("Admixture: did not converge in maximum number of iterations");
+			Rcpp::warning("[Admixture] Did not converge in maximum number of iterations");
   }
 
   Admixture (const Admixture& rhs, RcppParallel::Split)
@@ -1012,6 +1141,7 @@ struct Admixture : public RcppParallel::Worker
     unsigned j2 = rsample_index[j],
              i2 = rsite_index[i];
 
+    // TODO: if converting to GL.handler, need to change p[1] to p[2]
     // deal with missing data and holdouts
     arma::vec::fixed<2> p;
     if (GL.missing.at(j2, i2))
@@ -1064,6 +1194,9 @@ struct Admixture : public RcppParallel::Worker
 
     RcppParallel::parallelFor(0, site_index.n_elem, *this); 
     //(*this)(0, site_index.n_elem);
+    
+    if (!(arma::is_finite(Acoef) && arma::is_finite(Bcoef)))
+      Rcpp::stop("[Admixture] Numeric underflow, remove nonsegregating sites");
 
     F = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
     Q = (arma::sum(Acoef, 2) + arma::sum(Bcoef, 2));
@@ -1137,6 +1270,874 @@ struct Admixture : public RcppParallel::Worker
 			stepmax *= mstep;
 		
 		return false;
+  }
+};
+
+struct Microsat
+{
+  // for use with AdmixtureMsat/AdmixtureHybrid
+  
+  const GenotypeLikelihood& GL;
+  const arma::uvec sample_index;
+  const arma::cube L;
+
+  arma::mat oldfreq, freq, hwe, counts;
+
+  const arma::uword num_alleles, num_samples, num_clusters;
+  arma::vec loglikelihood;
+
+  Microsat (const GenotypeLikelihood& GL, const arma::uvec sample_index, arma::mat Qstart, const arma::cube like)
+    : GL (GL)
+    , sample_index (sample_index)
+    , L (like)
+    , num_alleles (like.n_rows)
+    , num_samples (sample_index.n_elem)
+    , num_clusters (Qstart.n_rows)
+    , loglikelihood (sample_index.n_elem)
+  {
+    if (Qstart.n_cols != num_samples             ||
+        GL.samples    != like.n_slices           ||
+        like.n_cols   != num_alleles             ||
+        arma::max(sample_index) >= like.n_slices )
+      Rcpp::stop ("[Microsat] Dimension mismatch");
+
+    Qstart.each_col([](arma::vec& x) { x /= arma::accu(x); });
+    freq = arma::randu<arma::mat>(num_alleles, num_clusters);
+    freq.each_col([](arma::vec& x) { x /= arma::accu(x); });
+    oldfreq = freq;
+    hwe = expected_frequencies(Qstart, freq);
+    counts = expected_counts(Qstart, freq, hwe);
+  }
+
+  double EM (const arma::mat& Q, arma::mat& Qup)
+  {
+    if (Q.n_cols   != num_samples  ||
+        Q.n_rows   != num_clusters ||
+        Qup.n_cols != num_samples  ||
+        Qup.n_rows != num_clusters )
+      Rcpp::stop ("[Microsat] Dimension mismatch");
+
+    oldfreq = freq;
+    hwe = expected_frequencies(Q, oldfreq);
+    counts = expected_counts(Q, oldfreq, hwe);
+    freq = update_frequencies(Q, oldfreq, hwe, counts);
+    Qup += update_admixture(Q, oldfreq, hwe, counts);
+
+    loglikelihood = loglik(Q, oldfreq, hwe);
+
+    return arma::accu(loglikelihood);
+  }
+
+  arma::mat expected_frequencies (const arma::mat& Q, const arma::mat& F)
+  {
+    // compute HWE frequencies per sample (input const Q&)
+    arma::mat out (num_alleles, num_samples, arma::fill::zeros);
+    for (unsigned s=0; s<num_samples; ++s) //samples
+      for (unsigned k=0; k<num_clusters; ++k) //clusters
+        for (unsigned i=0; i<num_alleles; ++i) //alleles
+          out.at(i,s) += Q.at(k,s) * F.at(i,k);
+
+    return out;
+  }
+  
+  arma::mat expected_counts (const arma::mat& Q, const arma::mat& F, const arma::mat& S)
+  {
+    // posterior expectation of allele counts for each sample
+    arma::mat out (num_alleles, num_samples, arma::fill::zeros);
+    for (unsigned s=0; s<num_samples; ++s) //samples
+    {
+      double den = 0., p = 0.;
+      arma::uword s2 = sample_index[s];
+      if (GL.ploidy.at(s2)==2)
+      {
+        //TODO: modify this loop and one in likelihood to cover all alleles
+        //for the wierd but possible case where likelihood matrix isn't symmetric
+        for (unsigned i=0; i<num_alleles; ++i) //alleles
+        {
+          p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
+          den += p;
+          out.at(i,s) += 2. * p;
+          for (unsigned j=i+1; j<num_alleles; ++j) //alleles again
+          {
+            p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
+            den += 2. * p;
+            out.at(i,s) += p;
+            out.at(j,s) += p;
+          }
+        }
+      } 
+      else 
+      {
+        for (unsigned i=0; i<num_alleles; ++i) //alleles
+        {
+          p = L.at(i,i,s2) * S.at(i,s);
+          den += p;
+          out.at(i,s) += p;
+        }
+      }
+      out.col(s) /= 2.*den; //scales haploid expectation to 0.5 as for snps
+    }
+    return out;
+  }
+  
+  arma::mat update_admixture (const arma::mat& Q, const arma::mat& F, const arma::mat& S, const arma::mat& E)
+  {
+    // contribution to admixture coeff update (input Qup&, const Q&)
+    arma::mat Qup = arma::zeros<arma::mat>(arma::size(Q));
+    for (unsigned s=0; s<num_samples; ++s) // samples
+      for (unsigned k=0; k<num_clusters; ++k) // clusters
+        for (unsigned i=0; i<num_alleles; ++i) // alleles
+          Qup.at(k,s) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
+    return Qup;
+  }
+  
+  arma::mat update_frequencies (const arma::mat& Q, const arma::mat& F, const arma::mat& S, const arma::mat& E)
+  {
+    // compute new frequencies (input const Q&)
+    arma::mat Fup = arma::zeros<arma::mat>(arma::size(F));
+    for (unsigned k=0; k<num_clusters; ++k) // clusters
+    {
+      arma::vec A (num_alleles, arma::fill::zeros);
+      for (unsigned i=0; i<num_alleles; ++i)
+      {
+        for (unsigned s=0; s<num_samples; ++s)
+        {
+          A.at(i) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
+        }
+      }
+      Fup.col(k) = A / arma::accu(A);
+    }
+
+    return Fup;
+  }
+
+  arma::vec loglik (const arma::mat& Q, const arma::mat& F, const arma::mat& S)
+  {
+    // calculate per-sample loglikelihood
+    arma::vec ll (num_samples);
+
+    for (unsigned s=0; s<num_samples; ++s)
+    {
+      double den = 0., p = 0.;
+      arma::uword s2 = sample_index[s];
+      if (GL.ploidy.at(s2)==2)
+      {
+        //TODO: modify this loop to cover all alleles
+        //for the wierd but possible case where likelihood matrix isn't symmetric
+        for (unsigned i=0; i<num_alleles; ++i)
+        {
+          p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
+          den += p;
+          for (unsigned j=i+1; j<num_alleles; ++j)
+          {
+            p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
+            den += 2. * p;
+          }
+        }
+      } 
+      else 
+      {
+        for (unsigned i=0; i<num_alleles; ++i)
+        {
+          p = L.at(i,i,s2) * S.at(i,s);
+          den += p;
+        }
+      }
+      ll[s] = log(den);
+    }
+    return ll;
+  }
+};
+
+struct AdmixtureHybrid : public RcppParallel::Worker
+{ 
+  public:
+  const GenotypeLikelihood &GL;				// contains likelihoods, ploidy, dimensions
+  const arma::uvec sample_index,      // only use these samples
+                   site_index;        // only use these sites
+  const unsigned K;   								// number of clusters, number of chromosomes to hold out
+  arma::mat Qmat, Fmat, loglik;       // admixture, frequencies, per site loglik
+  arma::cube Acoef, Bcoef;						// per-site coefficients (could move to private eventually)
+  std::vector<Microsat> Msat;         // microsatellite loci
+	double loglikelihood = 0.;					// total loglikelihood
+  unsigned iter = 0;
+
+  private:
+  bool   acceleration = true; // use EM acceleration?
+  double errtol = 1e-8; // not using dynamic bounds
+  double stepmax = 1., stepmin = 1.; // adaptive steplength
+
+	// references for slaves
+  const arma::uvec &rsample_index, &rsite_index;
+  const arma::mat &rQmat, &rFmat;
+  arma::mat &rloglik;
+  arma::cube &rAcoef, &rBcoef;
+
+	//temporaries
+	arma::mat Q0, Q1, Q2, F0, F1, F2, Qd1, Qd2, Qd3, Fd1, Fd2, Fd3;
+  std::vector<arma::mat> msF0, msF1, msFd1, msF2, msFd2, msFd3;
+
+  public:
+  AdmixtureHybrid (const GenotypeLikelihood& GL, const std::vector<arma::cube> microsat, const arma::uvec site_index, const arma::uvec sample_index, const arma::mat Qstart, const bool fixQ)
+    : GL (GL)
+    , sample_index (sample_index)
+    , site_index (site_index)
+    , K (Qstart.n_rows)
+    , Qmat (K, sample_index.n_elem)
+    , Fmat (K, site_index.n_elem, arma::fill::randu)
+    , loglik (sample_index.n_elem, site_index.n_elem)
+    , Acoef (K, sample_index.n_elem, site_index.n_elem)
+    , Bcoef (K, sample_index.n_elem, site_index.n_elem)
+    // read-write references for workers 
+    , rsample_index (sample_index)
+    , rsite_index (site_index)
+    , rQmat (Qmat)
+    , rFmat (Fmat)
+    , rloglik (loglik)
+    , rAcoef (Acoef)
+    , rBcoef (Bcoef)
+		// temporaries
+		, Q0 (arma::size(Qmat), arma::fill::zeros)
+		, Q1 (arma::size(Qmat), arma::fill::zeros)
+		, Q2 (arma::size(Qmat), arma::fill::zeros)
+		, Qd1 (arma::size(Qmat), arma::fill::zeros)
+		, Qd2 (arma::size(Qmat), arma::fill::zeros)
+		, Qd3 (arma::size(Qmat), arma::fill::zeros)
+		, F0 (arma::size(Fmat), arma::fill::zeros)
+		, F1 (arma::size(Fmat), arma::fill::zeros)
+		, F2 (arma::size(Fmat), arma::fill::zeros)
+		, Fd1 (arma::size(Fmat), arma::fill::zeros)
+		, Fd2 (arma::size(Fmat), arma::fill::zeros)
+		, Fd3 (arma::size(Fmat), arma::fill::zeros)
+  {
+		// everything here should interface with originals not references
+    if (K < 1)
+      Rcpp::stop ("[AdmixtureHybrid] Must have at least one cluster");
+    if (K > 999)
+      Rcpp::stop ("[AdmixtureHybrid] Number of clusters capped at 999");
+    if (arma::max(site_index) >= GL.sites)
+      Rcpp::stop ("[AdmixtureHybrid] Invalid entries in site index");
+    if (arma::max(sample_index) >= GL.samples)
+      Rcpp::stop ("[AdmixtureHybrid] Invalid entries in sample index");
+    if (Qstart.n_rows != Qmat.n_rows || Qstart.n_cols != Qmat.n_cols)
+      Rcpp::stop ("[AdmixtureHybrid] Starting values for Q are of wrong dimension");
+
+    const unsigned maxiter = 5000;
+
+    Qmat = Qstart;
+    Qmat.each_col([](arma::vec& x) { x /= arma::accu(x); });
+
+    Fmat.randu();
+    Fmat = arma::clamp(Fmat, errtol, 1.-errtol);
+
+    for (auto ms : microsat)
+    {
+      Msat.emplace_back(GL, sample_index, Qmat, ms);
+      msF0.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msF1.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msF2.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msFd1.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msFd2.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msFd3.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+    }
+		
+		for (iter=0; iter<maxiter; ++iter)
+    {
+      bool converged = EMaccel(fixQ ? Q0 : Qmat, Fmat, Msat);
+      if((iter+1) % 10 == 0) 
+        fprintf(stderr, "[AdmixtureHybrid] Iteration %u, loglik = %f\n", iter+1, loglikelihood);
+			if(converged)
+				break;
+    }
+  
+		if (iter == maxiter)
+			Rcpp::warning("[AdmixtureHybrid] did not converge in maximum number of iterations");
+  }
+
+  AdmixtureHybrid (const AdmixtureHybrid& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , K (rhs.K)
+    // references that interface with slaves
+    , rsite_index (rhs.rsite_index)
+    , rsample_index (rhs.rsample_index)
+    , rQmat (rhs.rQmat)
+    , rFmat (rhs.rFmat)
+    , rloglik (rhs.rloglik)
+    , rAcoef (rhs.rAcoef)
+    , rBcoef (rhs.rBcoef)
+  {}
+
+  void Diploid (arma::cube& A, arma::cube& B, arma::mat& ll, const size_t i, const unsigned j)
+  {
+    // everything in here should interact with references
+    // j = sample, i = site, k = cluster
+    unsigned j2 = rsample_index[j],
+             i2 = rsite_index[i];
+
+    arma::vec::fixed<3> p = GL.handler(j2,i2);
+
+    // check
+    const double h  = arma::accu(Qmat.col(j) % Fmat.col(i)),
+                 hn = arma::accu(Qmat.col(j) % (1.-Fmat.col(i)));
+    const arma::vec::fixed<3> hwe = {p[0] * (1.-h) * (1.-h),
+     																 p[1] * 2. * h * (1.-h),
+     																 p[2] * h * h};
+    double num = 0., den = 0.;
+    for (unsigned g=0; g<3; ++g)
+    {
+      num += double(g) * hwe[g];
+      den += hwe[g];
+    }
+			
+    ll.at(j,i) = log(den);
+    for (unsigned k=0; k<K; ++k)
+    {
+      A.at(k,j,i) = 0.5 * num/den * Qmat.at(k,j)*Fmat.at(k,i)/h;
+      B.at(k,j,i) = 0.5 * (2.-num/den) * Qmat.at(k,j)*(1.-Fmat.at(k,i))/hn;
+    }
+  }
+
+  void Haploid (arma::cube& A, arma::cube& B, arma::mat& ll, const size_t i, const unsigned j)
+  {
+    // everything in here should interact with references
+    // j = sample, i = site, k = cluster
+    unsigned j2 = rsample_index[j],
+             i2 = rsite_index[i];
+
+    arma::vec::fixed<3> p = GL.handler(j2,i2);
+
+    //check
+    const double h  = arma::accu(Qmat.col(j) % Fmat.col(i)),
+                 hn = arma::accu(Qmat.col(j) % (1.-Fmat.col(i)));
+    double den = p[0] * hn + p[2] * h;
+
+		ll.at(j,i) = log(den);
+		for (unsigned k=0; k<K; ++k)
+		{
+			A.at(k,j,i) = 0.5 * p[2] * Qmat.at(k,j)*Fmat.at(k,i)/den;
+			B.at(k,j,i) = 0.5 * p[0] * Qmat.at(k,j)*(1.-Fmat.at(k,i))/den;
+		}
+  }
+
+  void operator () (const size_t start, const size_t end)
+  {
+    // every large container passed should be a reference
+    for (size_t i=start; i!=end; ++i)
+    {
+      for (unsigned j=0; j<rsample_index.n_elem; ++j)
+      {
+        unsigned j2 = rsample_index[j];
+        if (GL.ploidy[j2] == 1)
+          Haploid(rAcoef, rBcoef, rloglik, i, j);
+        else if (GL.ploidy[j2] == 2)
+          Diploid(rAcoef, rBcoef, rloglik, i, j);
+      }
+    }
+  }
+
+  double EM (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
+  {
+    loglik.zeros();
+    Acoef.zeros();
+    Bcoef.zeros();
+
+    arma::mat Q_msat      = arma::zeros<arma::mat>(arma::size(Q));
+    double    loglik_msat = 0.;
+    for (auto& ms : Ms)
+      loglik_msat += ms.EM(Qmat, Q_msat);
+
+    RcppParallel::parallelFor(0, site_index.n_elem, *this); 
+    //(*this)(0, site_index.n_elem);
+
+    if (!(arma::is_finite(Acoef) && arma::is_finite(Bcoef) && arma::is_finite(Q_msat)))
+      Rcpp::stop("[AdmixtureHybrid] Numeric underflow, remove nonsegregating sites");
+
+    F  = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
+    Q  = arma::sum(Acoef, 2) + arma::sum(Bcoef, 2);
+    Q += Q_msat;
+    Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+    
+
+    return arma::accu(loglik) + loglik_msat;
+  }
+
+  void project (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
+  {
+    for (auto& ms : Ms)
+    {
+      ms.freq = arma::clamp(ms.freq, errtol, 1.-errtol);
+      ms.freq.each_col([](arma::vec& x) { x /= arma::accu(x); });
+    }
+    F = arma::clamp(F, errtol, 1.-errtol);
+    Q = arma::clamp(Q, errtol, arma::datum::inf);
+    Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+  }
+
+  bool EMaccel (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
+  {
+    // this should interact with the original containers
+    // this uses Qmat/Fmat in to calculate likelihood updates, and stores the output in Q/F
+
+		const double tol = 1e-5;
+		const double mstep = 4;
+
+    double ll0 = loglikelihood;
+
+    Q0 = Q;	F0 = F;
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+      msF0[locus] = Ms[locus].freq;
+
+		// first secant condition
+    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+	  Q1  = Q;		  	F1  = F;
+		Qd1 = Q - Q0;   Fd1 = F - F0;
+    double ll1 = loglikelihood;
+	  double sr2 = arma::accu(arma::pow(Qd1,2)) + arma::accu(arma::pow(Fd1,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msF1[locus]   = Ms[locus].freq;
+      msFd1[locus]  = msF1[locus] - msF0[locus];
+      sr2          += arma::accu(arma::pow(msFd1[locus],2));
+    }
+	  if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
+			return true;
+    
+    if (!acceleration) // vanilla EM
+      return false;
+
+		// second secant condition
+    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+	  Q2  = Q;		  	F2  = F;
+		Qd2 = Q - Q1;   Fd2 = F - F1;
+    double em  = loglikelihood;
+	  double sq2 = arma::accu(arma::pow(Qd2,2)) + arma::accu(arma::pow(Fd2,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msF2[locus]   = Ms[locus].freq;
+      msFd2[locus]  = msF2[locus] - msF1[locus];
+      sq2          += arma::accu(arma::pow(msFd2[locus],2));
+    }
+	  if (!arma::is_finite(sq2) || fabs(em - ll1) < tol || sqrt(sq2) < tol)
+			return true;
+
+		// the magic happens
+		Qd3 = Qd2 - Qd1; Fd3 = Fd2 - Fd1;
+	  double sv2 = arma::accu(arma::pow(Qd3,2)) + arma::accu(arma::pow(Fd3,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msFd3[locus]  = msFd2[locus] - msFd1[locus];
+      sv2          += arma::accu(arma::pow(msFd3[locus],2));
+    }
+	  double alpha = sqrt(sr2/sv2);
+		alpha = std::max(stepmin, std::min(stepmax, alpha));
+
+    F = F0 + 2.*alpha*Fd1 + alpha*alpha*Fd3;
+    Q = Q0 + 2.*alpha*Qd1 + alpha*alpha*Qd3;
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+      Ms[locus].freq = msF0[locus] + 2.*alpha*msFd1[locus] + alpha*alpha*msFd3[locus];
+    project (Q, F, Ms);
+
+		// stabilize
+		loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+
+    // revert to simple EM iteration if loglikelihood has decreased after acceleration
+    if (!arma::is_finite(loglikelihood) || loglikelihood < em)
+    {
+      loglikelihood = em;
+      Q = Q2;
+      F = F2;
+      for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+        Ms[locus].freq = msF2[locus];
+    }
+
+		if (alpha == stepmax)
+			stepmax *= mstep;
+		
+		return false;
+  }
+
+  // getters 
+
+  std::vector<arma::mat> microsat_frequencies (void) const
+  {
+    std::vector<arma::mat> out;
+    for (auto& ms : Msat)
+      out.push_back(ms.freq);
+    return out;
+  }
+
+  arma::mat microsat_loglikelihood (void) const
+  {
+    arma::mat out (sample_index.n_elem, Msat.size());
+    for (arma::uword locus = 0; locus < Msat.size(); ++locus)
+      out.col(locus) = Msat[locus].loglikelihood;
+    return out;
+  }
+
+  arma::mat snp_frequencies (void) const
+  {
+    return Fmat;
+  }
+
+  arma::mat snp_loglikelihood (void) const
+  {
+    return loglik;
+  }
+
+  arma::mat admixture_proportions (void) const
+  {
+    return Qmat;
+  }
+};
+
+struct AdmixtureHybrid2 : public RcppParallel::Worker
+{ 
+  // allow for population labels
+  
+  public:
+  const GenotypeLikelihood &GL;				    // contains SNP likelihoods, ploidy, dimensions
+  const arma::uvec sample_index,          // only use these samples
+                   site_index;            // only use these sites
+  const unsigned K;   								    // number of clusters, number of chromosomes to hold out
+  arma::mat D, Qdeme, Qmat, Fmat, loglik; // admixture, frequencies, per site loglik
+  arma::cube Acoef, Bcoef;						    // per-site coefficients (could move to private eventually)
+  std::vector<Microsat> Msat;             // microsatellite genotype likelihoods
+	double loglikelihood = 0.;					    // total loglikelihood
+  unsigned iter = 0;
+
+  private:
+  bool   acceleration = false;        // use EM acceleration?
+  double errtol = 1e-8;              // not using dynamic bounds
+  double stepmax = 1., stepmin = 1.; // adaptive steplength
+
+	// references for slaves
+  const arma::uvec &rsample_index, &rsite_index;
+  const arma::mat &rQmat, &rFmat;
+  arma::mat &rloglik;
+  arma::cube &rAcoef, &rBcoef;
+
+	//temporaries
+	arma::mat Q0, Q1, Q2, F0, F1, F2, Qd1, Qd2, Qd3, Fd1, Fd2, Fd3;
+  std::vector<arma::mat> msF0, msF1, msFd1, msF2, msFd2, msFd3;
+
+  public:
+  AdmixtureHybrid2 (const GenotypeLikelihood& GL, const std::vector<arma::cube> microsat, const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec deme_index, const arma::mat Qstart, const bool fixQ)
+    : GL (GL)
+    , sample_index (sample_index)
+    , site_index (site_index)
+    , K (Qstart.n_rows)
+    , D (arma::max(deme_index) + 1, sample_index.n_elem)
+    , Qdeme (K, arma::max(deme_index) + 1)
+    , Qmat (K, sample_index.n_elem)
+    , Fmat (K, site_index.n_elem, arma::fill::randu)
+    , loglik (sample_index.n_elem, site_index.n_elem)
+    , Acoef (K, sample_index.n_elem, site_index.n_elem)
+    , Bcoef (K, sample_index.n_elem, site_index.n_elem)
+    // read-write references for workers 
+    , rsample_index (sample_index)
+    , rsite_index (site_index)
+    , rQmat (Qmat)
+    , rFmat (Fmat)
+    , rloglik (loglik)
+    , rAcoef (Acoef)
+    , rBcoef (Bcoef)
+		// temporaries
+		, Q0 (arma::size(Qdeme), arma::fill::zeros)
+		, Q1 (arma::size(Qdeme), arma::fill::zeros)
+		, Q2 (arma::size(Qdeme), arma::fill::zeros)
+		, Qd1 (arma::size(Qdeme), arma::fill::zeros)
+		, Qd2 (arma::size(Qdeme), arma::fill::zeros)
+		, Qd3 (arma::size(Qdeme), arma::fill::zeros)
+		, F0 (arma::size(Fmat), arma::fill::zeros)
+		, F1 (arma::size(Fmat), arma::fill::zeros)
+		, F2 (arma::size(Fmat), arma::fill::zeros)
+		, Fd1 (arma::size(Fmat), arma::fill::zeros)
+		, Fd2 (arma::size(Fmat), arma::fill::zeros)
+		, Fd3 (arma::size(Fmat), arma::fill::zeros)
+  {
+		// everything here should interface with originals not references
+    if (K < 1)
+      Rcpp::stop ("[AdmixtureHybrid] Must have at least one cluster");
+    if (K > 999)
+      Rcpp::stop ("[AdmixtureHybrid] Number of clusters capped at 999");
+    if (arma::max(site_index) >= GL.sites)
+      Rcpp::stop ("[AdmixtureHybrid] Invalid entries in site index");
+    if (arma::max(sample_index) >= GL.samples)
+      Rcpp::stop ("[AdmixtureHybrid] Invalid entries in sample index");
+    if (Qstart.n_rows != Qdeme.n_rows || Qstart.n_cols != Qdeme.n_cols)
+      Rcpp::stop ("[AdmixtureHybrid] Starting values for Q are of wrong dimension");
+    if (deme_index.n_elem != sample_index.n_elem)
+      Rcpp::stop ("[AdmixtureHybrid] Length of deme index does not match length of sample index");
+    if (arma::max(deme_index) >= deme_index.n_elem)
+      Rcpp::stop ("[AdmixtureHybrid] Deme indices must be 0-based contiguous integers");
+
+    const unsigned maxiter = 5000;
+
+    D.zeros();
+    for (unsigned i = 0; i < sample_index.n_elem; ++i)
+      D.at(deme_index[i], i) = 1.;
+
+    Qdeme = Qstart;
+    Qdeme.each_col([](arma::vec& x) { x /= arma::accu(x); });
+
+    Fmat.randu();
+    Fmat = arma::clamp(Fmat, errtol, 1.-errtol);
+
+    for (auto ms : microsat)
+    {
+      Msat.emplace_back(GL, sample_index, Qmat, ms);
+      msF0.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msF1.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msF2.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msFd1.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msFd2.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+      msFd3.push_back(arma::zeros<arma::mat>(ms.n_rows, Qmat.n_rows));
+    }
+		
+		for (iter=0; iter<maxiter; ++iter)
+    {
+      bool converged = EMaccel(fixQ ? Q0 : Qdeme, Fmat, Msat);
+      if((iter+1) % 10 == 0) 
+        fprintf(stderr, "[AdmixtureHybrid] Iteration %u, loglik = %f\n", iter+1, loglikelihood);
+			if(converged)
+				break;
+    }
+  
+		if (iter == maxiter)
+			Rcpp::warning("[AdmixtureHybrid] did not converge in maximum number of iterations");
+  }
+
+  AdmixtureHybrid2 (const AdmixtureHybrid2& rhs, RcppParallel::Split)
+    : GL (rhs.GL)
+    , K (rhs.K)
+    // references that interface with slaves
+    , rsite_index (rhs.rsite_index)
+    , rsample_index (rhs.rsample_index)
+    , rQmat (rhs.rQmat)
+    , rFmat (rhs.rFmat)
+    , rloglik (rhs.rloglik)
+    , rAcoef (rhs.rAcoef)
+    , rBcoef (rhs.rBcoef)
+  {}
+
+  void Diploid (arma::cube& A, arma::cube& B, arma::mat& ll, const size_t i, const unsigned j)
+  {
+    // everything in here should interact with references
+    // j = sample, i = site, k = cluster
+    unsigned j2 = rsample_index[j],
+             i2 = rsite_index[i];
+
+    arma::vec::fixed<3> p = GL.handler(j2,i2);
+
+    // check
+    const double h  = arma::accu(Qmat.col(j) % Fmat.col(i)),
+                 hn = arma::accu(Qmat.col(j) % (1.-Fmat.col(i)));
+    const arma::vec::fixed<3> hwe = {p[0] * (1.-h) * (1.-h),
+     																 p[1] * 2. * h * (1.-h),
+     																 p[2] * h * h};
+    double num = 0., den = 0.;
+    for (unsigned g=0; g<3; ++g)
+    {
+      num += double(g) * hwe[g];
+      den += hwe[g];
+    }
+			
+    ll.at(j,i) = log(den);
+    for (unsigned k=0; k<K; ++k)
+    {
+      A.at(k,j,i) = 0.5 * num/den * Qmat.at(k,j)*Fmat.at(k,i)/h;
+      B.at(k,j,i) = 0.5 * (2.-num/den) * Qmat.at(k,j)*(1.-Fmat.at(k,i))/hn;
+    }
+  }
+
+  void Haploid (arma::cube& A, arma::cube& B, arma::mat& ll, const size_t i, const unsigned j)
+  {
+    // everything in here should interact with references
+    // j = sample, i = site, k = cluster
+    unsigned j2 = rsample_index[j],
+             i2 = rsite_index[i];
+
+    arma::vec::fixed<3> p = GL.handler(j2,i2);
+
+    //check
+    const double h  = arma::accu(Qmat.col(j) % Fmat.col(i)),
+                 hn = arma::accu(Qmat.col(j) % (1.-Fmat.col(i)));
+    double den = p[0] * hn + p[2] * h;
+
+		ll.at(j,i) = log(den);
+		for (unsigned k=0; k<K; ++k)
+		{
+			A.at(k,j,i) = 0.5 * p[2] * Qmat.at(k,j)*Fmat.at(k,i)/den;
+			B.at(k,j,i) = 0.5 * p[0] * Qmat.at(k,j)*(1.-Fmat.at(k,i))/den;
+		}
+  }
+
+  void operator () (const size_t start, const size_t end)
+  {
+    // every large container passed should be a reference
+    for (size_t i=start; i!=end; ++i)
+    {
+      for (unsigned j=0; j<rsample_index.n_elem; ++j)
+      {
+        unsigned j2 = rsample_index[j];
+        if (GL.ploidy[j2] == 1)
+          Haploid(rAcoef, rBcoef, rloglik, i, j);
+        else if (GL.ploidy[j2] == 2)
+          Diploid(rAcoef, rBcoef, rloglik, i, j);
+      }
+    }
+  }
+
+  double EM (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
+  {
+    loglik.zeros();
+    Acoef.zeros();
+    Bcoef.zeros();
+
+    Qmat = Q * D;
+
+    arma::mat Qmat_update = arma::zeros<arma::mat>(arma::size(Qmat));
+    double    loglik_msat = 0.;
+    for (auto& ms : Ms)
+      loglik_msat += ms.EM(Qmat, Qmat_update);
+
+    RcppParallel::parallelFor(0, site_index.n_elem, *this); //uses Qmat
+    //(*this)(0, site_index.n_elem);
+
+    if (!(arma::is_finite(Acoef) && arma::is_finite(Bcoef) && arma::is_finite(Qmat_update)))
+      Rcpp::stop("[AdmixtureHybrid] Numeric underflow, remove nonsegregating sites");
+
+    F            = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
+    Qmat_update += arma::sum(Acoef, 2) + arma::sum(Bcoef, 2);
+    Q            = Qmat_update * D.t(); 
+    Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+    
+    return arma::accu(loglik) + loglik_msat;
+  }
+
+  void project (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
+  {
+    for (auto& ms : Ms)
+    {
+      ms.freq = arma::clamp(ms.freq, errtol, 1.-errtol);
+      ms.freq.each_col([](arma::vec& x) { x /= arma::accu(x); });
+    }
+    F = arma::clamp(F, errtol, 1.-errtol);
+    Q = arma::clamp(Q, errtol, arma::datum::inf);
+    Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+  }
+
+  bool EMaccel (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
+  {
+		const double tol = 1e-5;
+		const double mstep = 4;
+
+    double ll0 = loglikelihood;
+
+    Q0 = Q;	F0 = F;
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+      msF0[locus] = Ms[locus].freq;
+
+		// first secant condition
+    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+	  Q1  = Q;		  	F1  = F;
+		Qd1 = Q - Q0;   Fd1 = F - F0;
+    double ll1 = loglikelihood;
+	  double sr2 = arma::accu(arma::pow(Qd1,2)) + arma::accu(arma::pow(Fd1,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msF1[locus]   = Ms[locus].freq;
+      msFd1[locus]  = msF1[locus] - msF0[locus];
+      sr2          += arma::accu(arma::pow(msFd1[locus],2));
+    }
+	  if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
+			return true;
+    
+    if (!acceleration) // vanilla EM
+      return false;
+
+		// second secant condition
+    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+	  Q2  = Q;		  	F2  = F;
+		Qd2 = Q - Q1;   Fd2 = F - F1;
+    double em  = loglikelihood;
+	  double sq2 = arma::accu(arma::pow(Qd2,2)) + arma::accu(arma::pow(Fd2,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msF2[locus]   = Ms[locus].freq;
+      msFd2[locus]  = msF2[locus] - msF1[locus];
+      sq2          += arma::accu(arma::pow(msFd2[locus],2));
+    }
+	  if (!arma::is_finite(sq2) || fabs(em - ll1) < tol || sqrt(sq2) < tol)
+			return true;
+
+		// the magic happens
+		Qd3 = Qd2 - Qd1; Fd3 = Fd2 - Fd1;
+	  double sv2 = arma::accu(arma::pow(Qd3,2)) + arma::accu(arma::pow(Fd3,2));
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+    {
+      msFd3[locus]  = msFd2[locus] - msFd1[locus];
+      sv2          += arma::accu(arma::pow(msFd3[locus],2));
+    }
+	  double alpha = sqrt(sr2/sv2);
+		alpha = std::max(stepmin, std::min(stepmax, alpha));
+
+    F = F0 + 2.*alpha*Fd1 + alpha*alpha*Fd3;
+    Q = Q0 + 2.*alpha*Qd1 + alpha*alpha*Qd3;
+    for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+      Ms[locus].freq = msF0[locus] + 2.*alpha*msFd1[locus] + alpha*alpha*msFd3[locus];
+    project (Q, F, Ms);
+
+		// stabilize
+		loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+
+    // revert to simple EM iteration if loglikelihood has decreased after acceleration
+    if (!arma::is_finite(loglikelihood) || loglikelihood < em)
+    {
+      loglikelihood = em;
+      Q = Q2;
+      F = F2;
+      for (arma::uword locus = 0; locus < Ms.size(); ++locus)
+        Ms[locus].freq = msF2[locus];
+    }
+
+		if (alpha == stepmax)
+			stepmax *= mstep;
+		
+		return false;
+  }
+
+  // getters 
+
+  std::vector<arma::mat> microsat_frequencies (void) const
+  {
+    std::vector<arma::mat> out;
+    for (auto& ms : Msat)
+      out.push_back(ms.freq);
+    return out;
+  }
+
+  arma::mat microsat_loglikelihood (void) const
+  {
+    arma::mat out (sample_index.n_elem, Msat.size());
+    for (arma::uword locus = 0; locus < Msat.size(); ++locus)
+      out.col(locus) = Msat[locus].loglikelihood;
+    return out;
+  }
+
+  arma::mat snp_frequencies (void) const
+  {
+    return Fmat;
+  }
+
+  arma::mat snp_loglikelihood (void) const
+  {
+    return loglik;
+  }
+
+  arma::mat admixture_proportions (void) const
+  {
+    return Qdeme;
   }
 };
 
@@ -3082,10 +4083,6 @@ struct Haplodiplo
 {
   GenotypeLikelihood GL;
 
- // Master (std::string filename, arma::uvec ploidy)
- //   : GL (filename, ploidy)
- // {}
- 
   Haplodiplo (const arma::cube& like, const arma::ucube& cnts, const arma::umat& pos, arma::uvec ploidy)
     : GL (like, cnts, arma::trans(pos), ploidy)
   {
@@ -3146,14 +4143,13 @@ struct Haplodiplo
     return geno.freq;
   }
 
-  //Rcpp::List admixture (arma::uvec site_index, arma::uvec sample_index, const unsigned K)
   Rcpp::List admixture (arma::uvec site_index, arma::uvec sample_index, arma::mat Qstart)
   {
     arma::arma_rng::set_seed(1);
 
     //arma::mat Qstart = arma::randu<arma::mat>(K, sample_index.n_elem);
 
-    fprintf(stderr, "[Haplodiplo::admixture] all data\n");    
+    fprintf(stderr, "[Haplodiplo::admixture] Using all data\n");    
     Admixture admix (GL, site_index, sample_index, Qstart, false);
 
     return Rcpp::List::create(
@@ -3161,6 +4157,35 @@ struct Haplodiplo
         Rcpp::_["Loglik"] = admix.loglikelihood,    
         Rcpp::_["F"] = admix.Fmat,
         Rcpp::_["Q"] = admix.Qmat,
+        Rcpp::_["AIC"] = -2. * admix.loglikelihood + 2 * double(admix.Fmat.n_elem + admix.Qmat.n_elem)
+        );
+  }
+
+  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Qstart, std::vector<arma::cube> microsat)
+  {
+    arma::arma_rng::set_seed(1);
+
+    //arma::mat Qstart = arma::randu<arma::mat>(K, sample_index.n_elem);
+
+    fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using all data\n");    
+    AdmixtureHybrid2 admix (GL, microsat, site_index, sample_index, deme_index, Qstart, false);
+
+    // correctly setting dimensions
+    std::vector<arma::mat> Fms = admix.microsat_frequencies();
+    Rcpp::List Fms_out (Fms.size());
+    for (int i=0; i<Fms.size(); ++i)
+    {
+      Rcpp::NumericVector tmp = Rcpp::wrap(Fms[i]);
+      tmp.attr("dim") = Rcpp::Dimension(Fms[i].n_rows, Fms[i].n_cols);
+      Fms_out[i] = tmp; 
+    }
+
+    return Rcpp::List::create(
+        Rcpp::_["K"] = Qstart.n_rows,
+        Rcpp::_["Loglik"] = admix.loglikelihood,    
+        Rcpp::_["F_snp"] = admix.snp_frequencies(),
+        Rcpp::_["F_msat"] = Fms_out, 
+        Rcpp::_["Q"] = admix.admixture_proportions(),
         Rcpp::_["AIC"] = -2. * admix.loglikelihood + 2 * double(admix.Fmat.n_elem + admix.Qmat.n_elem)
         );
   }
@@ -3504,6 +4529,7 @@ RCPP_MODULE(Haplodiplo) {
 //    .constructor<std::string, arma::uvec>()
     .constructor<arma::cube, arma::ucube, arma::umat, arma::uvec>()
     .method("admixture", &Haplodiplo::admixture)
+    .method("admixture_hybrid", &Haplodiplo::admixture_hybrid)
     .method("frequencies", &Haplodiplo::frequencies)
     .method("postsnp", &Haplodiplo::postsnp)
     .method("genofreq", &Haplodiplo::genofreq)
@@ -3718,7 +4744,7 @@ struct SFS1d : public RcppParallel::Worker
 
   bool EMaccel (void)
   {
-    const double tol = 1e-8;
+    const double tol = 1e-5;
     const double mstep = 4.;
 
     arma::vec sfs0 = sfs;
@@ -3978,7 +5004,7 @@ struct SFS2d : public RcppParallel::Worker
 
   bool EMaccel (void)
   {
-    const double tol = 1e-8;
+    const double tol = 1e-5;
     const double mstep = 4.;
 
     arma::mat sfs0 = sfs;
@@ -4245,7 +5271,7 @@ struct SFS3d : public RcppParallel::Worker
 
   bool EMaccel (void)
   {
-    const double tol = 1e-8;
+    const double tol = 1e-5;
     const double mstep = 4.;
 
     arma::cube sfs0 = sfs;
