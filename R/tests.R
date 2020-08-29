@@ -227,6 +227,44 @@ tests <- function()
 
 }
 
+.test_multiallelic <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"))
+{
+  test <- match.arg(test)
+
+  set.seed(seed)
+
+  num_samples <- 10
+  num_alleles <- 5
+
+  if (test == "haploid")
+    ploidy <- rep(1, num_samples)
+  else if (test == "diploid")
+    ploidy <- rep(2, num_samples)
+  else if (test == "haplodiploid")
+    ploidy <- sample(1:2, num_samples, replace=TRUE)
+
+  glf <- array(0, c(3, num_samples, 10))
+  cnt <- array(0, c(4, num_samples, 10))
+  pos <- cbind(0, 0:9, 0, 1)
+
+  Hd <- Haplodiplo$new(glf, cnt, pos, ploidy)
+
+  # add a locus with no missing data
+  gno <- matrix(0, 2, num_samples)
+  for(i in 1:num_samples)
+    gno[1:ploidy[i],i] <- sample(1:num_alleles, ploidy[i], replace=TRUE)
+  Hd$multiallelic(0, 0, 9, gno, 0.05, 0.01)
+
+  # with missing data in first sample
+  gno[,1] <- 0
+  Hd$multiallelic(0, 0, 9, gno, 0.05, 0.01)
+
+  print(Hd$multiallelic_likelihoods())
+  print(Hd$multiallelic_positions())
+
+  return(0)
+}
+
 .test_admixture_hybrid <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"), figure = "test_admixture_hybrid.pdf", fst = 0.1)
 {
   # DONE
@@ -342,6 +380,8 @@ tests <- function()
 
     dev.off()
   }
+
+  return(0)
 }
 
 .test_admixture <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"), fst = 0.1)
@@ -455,6 +495,7 @@ tests <- function()
 .simulate_glf_admixture <- function(Q, F, ploidy=rep(2, ncol(Q)), seed=0, err=0.01, depth=10)
 {
   # simulate GLF under an admixture/structure-like model
+  # using first GATK error model
 
   set.seed(seed)
 
