@@ -265,7 +265,7 @@ tests <- function()
   return(0)
 }
 
-.test_admixture_hybrid <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"), figure = "test_admixture_hybrid.pdf", fst = 0.1)
+.test_admixture_hybrid <- function(seed = 1, test = c("haploid", "diploid", "haplodiploid"), figure = "test_admixture_hybrid.pdf", fst = 0.1, errors=FALSE, missing=FALSE)
 {
   # DONE
 
@@ -278,8 +278,12 @@ tests <- function()
   num_clusters <- 3
   num_demes <- 30
   num_microsat <- 100
-  num_microsat_alleles <- 10
-  min_maf <- 0.25
+  num_microsat_alleles <- 5
+
+  missing      <- if(missing) 0.1 else 0.0
+  snp_err      <- if(errors) 0.01 else 0.0
+  msat_err     <- if(errors) 0.05 else 0.0
+  msat_dropout <- if(errors) 0.01 else 0.0
 
   if (test == "haploid")
     ploidy <- rep(1, num_samples)
@@ -299,12 +303,14 @@ tests <- function()
   Q <- prop.table(Q, 2)
 
   # simulate SNPs
-  anc <- runif(num_snps, min_maf, 1-min_maf)
+  anc <- rep(0.5, num_snps)
   F <- matrix(NA, num_clusters, num_snps)
   for(i in 1:num_clusters)
     F[i,] <- rbeta(num_snps, (1-fst)/fst * anc, (1-fst)/fst * (1-anc))
-  data <- .simulate_glf_admixture(Q %*% D, F, ploidy, seed = seed)
-  dropme <- colSums(data$gno) == 0 | colSums(data$gno) == sum(ploidy)
+  data <- .simulate_glf_admixture(Q %*% D, F, ploidy, seed = seed, err = snp_err, missing = missing)
+  dropme <- 
+    colSums(data$gno, na.rm=TRUE) == 0 | 
+    colSums(data$gno, na.rm=TRUE) == colSums(data$gno*0+ploidy, na.rm=TRUE)
   data$gno <- data$gno[,!dropme]
   data$cnt <- data$cnt[,,!dropme]
   data$glf <- data$glf[,,!dropme]
@@ -313,15 +319,14 @@ tests <- function()
   num_snps <- sum(!dropme)
   anc <- anc[!dropme]
 
-  stopifnot(all(colSums(data$gno) > 0))
-  stopifnot(all(colSums(data$gno) < sum(ploidy)))
+  stopifnot(all(colSums(data$gno, na.rm=TRUE) > 0))
+  stopifnot(all(colSums(data$gno, na.rm=TRUE) < colSums(data$gno*0+ploidy, na.rm=TRUE)))
 
-  # simulate microsats (move to it's own function)
-  anc_ms <- matrix(rgamma(num_microsat_alleles*num_microsat, 1, 1), num_microsat_alleles, num_microsat)
+  # simulate microsats
+  anc_ms <- matrix(1/num_microsat_alleles, num_microsat_alleles, num_microsat)
   anc_ms <- prop.table(anc_ms, 2)
-  gno_ms <- array(0, c(num_samples, num_microsat_alleles, num_microsat))
+  gno_ms <- array(0, c(2, num_samples, num_microsat))
   Fms <- array(NA, c(num_clusters, num_microsat_alleles, num_microsat))
-  Lms <- list()
   for(i in 1:num_microsat)
   {
     for(j in 1:num_clusters)
@@ -329,28 +334,14 @@ tests <- function()
       Fms[j,,i] <- rgamma(num_microsat_alleles, (1-fst)/fst * anc_ms[,i], 1)
       Fms[j,,i] <- Fms[j,,i]/sum(Fms[j,,i])
     }
-    Pms <- t(Q %*% D) %*% Fms[,,i]
-    Lms[[i]] <- array(0, c(num_microsat_alleles, num_microsat_alleles, num_samples))
-    for(k in 1:num_samples)
-    {
-      g <- c()
-      for(a in 1:ploidy[k])
-      {
-        draw <- sample(1:num_microsat_alleles, 1, prob=Pms[k,])
-        g <- c(g, draw)
-        gno_ms[k,draw,i] <- gno_ms[k,draw,i] + 1
-      }
-      if(length(g)==1)
-        g <- c(g, g)
-      g <- g[order(g)]
-      Lms[[i]][g[1],g[2],k] <- 1
-    }
+    gno_ms[,,i] <- .simulate_msat_admixture(Q %*% D, Fms[,,i], ploidy, seed=seed+i, err = msat_err, dropout = msat_dropout, missing = missing)
+    #stopifnot(length(unique(gno_ms[,,i])) == num_microsat_alleles)
   }
 
-  Qstart <- Q
-
   Hd <- Haplodiplo$new(data$glf, data$cnt, data$pos, ploidy)
-  admix_hyb <- Hd$admixture_hybrid(1:num_snps-1, 1:num_samples-1, deme-1, Qstart, Lms)
+  for (i in 1:num_microsat)
+    Hd$multiallelic(0, i, i, gno_ms[,,i], msat_dropout, msat_err)
+  admix_hyb <- Hd$admixture_hybrid(1:num_snps-1, 1:num_samples-1, deme-1, Q)
 
   F_msat <- array(NA, c(num_clusters,num_microsat_alleles,num_microsat))
   for(i in 1:num_microsat) F_msat[,,i] <- t(admix_hyb$F_msat[[i]])
@@ -412,7 +403,9 @@ tests <- function()
     F[i,] <- rbeta(num_snps, (1-fst)/fst * anc, (1-fst)/fst * (1-anc))
   data <- .simulate_glf_admixture(Q, F, ploidy, seed = seed)
 
-  dropme <- colSums(data$gno) == 0 | colSums(data$gno) == sum(ploidy)
+  dropme <- 
+    colSums(data$gno, na.rm=TRUE) == 0 | 
+    colSums(data$gno, na.rm=TRUE) == colSums(data$gno*0+ploidy, na.rm=TRUE)
   data$gno <- data$gno[,!dropme]
   data$cnt <- data$cnt[,,!dropme]
   data$glf <- data$glf[,,!dropme]
@@ -421,8 +414,8 @@ tests <- function()
   num_snps <- sum(!dropme)
   anc <- anc[!dropme]
 
-  stopifnot(all(colSums(data$gno) > 0))
-  stopifnot(all(colSums(data$gno) < sum(ploidy)))
+  stopifnot(all(colSums(data$gno, na.rm=TRUE) > 0))
+  stopifnot(all(colSums(data$gno, na.rm=TRUE) < colSums(data$gno*0+ploidy, na.rm=TRUE)))
 
   Qstart <- Q
 
@@ -492,7 +485,61 @@ tests <- function()
   Hd$shf(rbind(c(0,1),c(0,2),c(1,2)), 0:3)
 }
 
-.simulate_glf_admixture <- function(Q, F, ploidy=rep(2, ncol(Q)), seed=0, err=0.01, depth=10)
+.simulate_msat_admixture <- function(Q, F, ploidy=rep(2, ncol(Q)), seed=0, dropout=0.0, err=0.0, missing=0.0)
+{
+  # simulate microsatellites under an admixture/structure-like model
+  # using Wang 2004 Genetics genotyping error model
+
+  set.seed(seed)
+
+  samples <- ncol(Q)
+  alleles <- ncol(F)
+  gno     <- matrix(0, 2, samples)
+
+  typing_errors <- 0
+  dropout_errors <- 0
+
+  P <- t(Q) %*% F
+  for(k in 1:samples)
+  {
+    if (runif(1) < missing)
+      gno[,k] <- 0
+    else
+    {
+      for(a in 1:ploidy[k])
+        gno[a,k] <- sample(1:alleles, 1, prob=P[k,])
+
+      # allele dropout
+      if(ploidy[k]==2 & runif(1) < dropout)
+      {
+        if (gno[1,k]!=gno[2,k])
+        {
+          dropout_errors <- dropout_errors + 1
+          if(runif(1) < 0.5)
+            gno[1,k] <- gno[2,k]
+          else
+            gno[2,k] <- gno[1,k]
+        }
+      }
+      
+      # typing errors
+      for(a in 1:ploidy[k])
+      {
+        if (runif(1) < err)
+        {
+          gno[a,k] <- sample((1:alleles)[-gno[a,k]], 1)
+          typing_errors <- typing_errors + 1
+        }
+      }
+    }
+  }
+
+  cat("Dropout errors:", dropout_errors, "\n")
+  cat("Typing errors:", typing_errors, "\n")
+  return(gno)
+}
+
+.simulate_glf_admixture <- function(Q, F, ploidy=rep(2, ncol(Q)), seed=0, err=0.0, depth=10, missing=0.0)
 {
   # simulate GLF under an admixture/structure-like model
   # using first GATK error model
@@ -515,27 +562,36 @@ tests <- function()
   {
     for(j in 1:ncol(Q))
     {
-      fr <- E[j,i]
-      dp <- rpois(1, depth)
-      if (ploidy[j]==2) 
+      if (runif(1) < missing)
       {
-        gno[j,i] <- sample(0:2,1,prob=c((1-fr)^2,2*fr*(1-fr),fr^2))
-        if (gno[j,i] == 0) 
-          alt <- rbinom(1, dp, err)
-        else if (gno[j,i] == 1)
-          alt <- rbinom(1, dp, 0.5)
-        else
-          alt <- rbinom(1, dp, 1-err)
-      } else { 
-        gno[j,i] <- sample(0:1,1,prob=c((1-fr),fr))
-        if (gno[j,i] == 0) 
-          alt <- rbinom(1, dp, err)
-        else
-          alt <- rbinom(1, dp, 1-err)
+        gno[j,i]  <- NA
+        cnt[,j,i] <- c(0,0,0,0)
+        glf[,j,i] <- log(1/3)
       }
-      ref <- dp - alt
-      cnt[,j,i] <- c(ref,alt,0,0)
-      glf[,j,i] <- glik(cnt[,j,i], err)
+      else
+      {
+        fr <- E[j,i]
+        dp <- rpois(1, depth)
+        if (ploidy[j]==2) 
+        {
+          gno[j,i] <- sample(0:2,1,prob=c((1-fr)^2,2*fr*(1-fr),fr^2))
+          if (gno[j,i] == 0) 
+            alt <- rbinom(1, dp, err)
+          else if (gno[j,i] == 1)
+            alt <- rbinom(1, dp, 0.5)
+          else
+            alt <- rbinom(1, dp, 1-err)
+        } else { 
+          gno[j,i] <- sample(0:1,1,prob=c((1-fr),fr))
+          if (gno[j,i] == 0) 
+            alt <- rbinom(1, dp, err)
+          else
+            alt <- rbinom(1, dp, 1-err)
+        }
+        ref <- dp - alt
+        cnt[,j,i] <- c(ref,alt,0,0)
+        glf[,j,i] <- glik(cnt[,j,i], err)
+      }
     }
   }
   pos <- cbind(0, 1:ncol(F)-1, 0, 1)
