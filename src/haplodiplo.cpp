@@ -3886,11 +3886,13 @@ struct Haplodiplo
     // correctly setting dimensions
     std::vector<arma::mat> Fms = admix.microsat_frequencies();
     Rcpp::List Fms_out (Fms.size());
+    unsigned pars_ms = 0;
     for (int i=0; i<Fms.size(); ++i)
     {
       Rcpp::NumericVector tmp = Rcpp::wrap(Fms[i]);
       tmp.attr("dim") = Rcpp::Dimension(Fms[i].n_rows, Fms[i].n_cols);
       Fms_out[i] = tmp; 
+      pars_ms += tmp.n_elem;
     }
 
     return Rcpp::List::create(
@@ -3899,7 +3901,8 @@ struct Haplodiplo
         Rcpp::_["F_snp"] = admix.snp_frequencies(),
         Rcpp::_["F_msat"] = Fms_out, 
         Rcpp::_["Q"] = admix.admixture_proportions(),
-        Rcpp::_["AIC"] = -2. * admix.loglikelihood + 2 * double(admix.Fmat.n_elem + admix.Qmat.n_elem)
+        Rcpp::_["AIC"] = -2. * admix.loglikelihood + 
+          2 * double(admix.snp_frequencies().n_elem + admix.admixture_proportions().n_elem + pars_ms)
         );
   }
 
