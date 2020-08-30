@@ -335,7 +335,7 @@ tests <- function()
       Fms[j,,i] <- Fms[j,,i]/sum(Fms[j,,i])
     }
     gno_ms[,,i] <- .simulate_msat_admixture(Q %*% D, Fms[,,i], ploidy, seed=seed+i, err = msat_err, dropout = msat_dropout, missing = missing)
-    #stopifnot(length(unique(gno_ms[,,i])) == num_microsat_alleles)
+    stopifnot(length(unique(gno_ms[,,i][gno_ms[,,i]>0])) == num_microsat_alleles)
   }
 
   Hd <- Haplodiplo$new(data$glf, data$cnt, data$pos, ploidy)
@@ -371,6 +371,10 @@ tests <- function()
 
     dev.off()
   }
+
+  # does it work without the microsats
+  Hd <- Haplodiplo$new(data$glf, data$cnt, data$pos, ploidy)
+  admix_hyb <- Hd$admixture_hybrid(1:num_snps-1, 1:num_samples-1, deme-1, Q)
 
   return(0)
 }

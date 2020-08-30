@@ -1308,6 +1308,8 @@ struct Admixture : public RcppParallel::Worker
 
 struct AdmixtureHybrid : public RcppParallel::Worker
 { 
+  // This supercedes Admixture, remove that
+  
   struct Microsat
   {
     const MultiAllelicGenotypeLikelihood &MAGL;
@@ -1350,12 +1352,12 @@ struct AdmixtureHybrid : public RcppParallel::Worker
         Rcpp::stop ("[Microsat] Dimension mismatch");
 
       arma::mat F = Fmat;
-      Emat = expected_frequencies(Q, F);
-      Smat = expected_counts(Q, F, Emat);
-      Fmat = update_frequencies(Q, F, Emat, Smat);
-      Qup += update_admixture(Q, F, Emat, Smat);
+      Smat = expected_frequencies(Q, F);
+      Emat = expected_counts(Q, F, Smat);
+      Fmat = update_frequencies(Q, F, Smat, Emat);
+      Qup += update_admixture(Q, F, Smat, Emat);
 
-      loglikelihood = loglik(Q, F, Emat);
+      loglikelihood = loglik(Q, F, Smat);
 
       return arma::accu(loglikelihood);
     }
@@ -1395,8 +1397,9 @@ struct AdmixtureHybrid : public RcppParallel::Worker
               {
                 p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
                 den += 2. * p;
-                out.at(i,s) += p;
-                out.at(j,s) += p;
+                // 8/30/20 adding the factor of 2 below seems to have fixed the EM updates
+                out.at(i,s) += 2. * p;
+                out.at(j,s) += 2. * p;
               }
             }
         } 
@@ -1486,13 +1489,13 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   };
   
   const GenotypeLikelihood &GL;				        // contains SNP likelihoods, ploidy, dimensions
-  const MultiAllelicGenotypeLikelihood &MAGL; // contains Msat likelihoods
+  const MultiAllelicGenotypeLikelihood &MAGL; // contains microsat likelihoods
   const arma::uvec sample_index,              // only use these samples
                    site_index;                // only use these sites
   const unsigned K;   								        // number of clusters, number of chromosomes to hold out
   arma::mat D, Qdeme, Qmat, Fmat, loglik;     // admixture, frequencies, per site loglik
   arma::cube Acoef, Bcoef;						        // per-site coefficients (could move to private eventually)
-  std::vector<Microsat> Msat;                 // microsatellite genotype likelihoods
+  std::vector<Microsat> Msat;                 // microsatellite genotype likelihoods and frequencies
 	double loglikelihood = 0.;					        // total loglikelihood
   unsigned iter = 0;
 
@@ -1501,7 +1504,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   double errtol = 1e-8;              // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
 
-	// references for slaves
+	// references for workers
   const arma::uvec &rsample_index, &rsite_index;
   const arma::mat &rQmat, &rFmat;
   arma::mat &rloglik;
@@ -1566,10 +1569,12 @@ struct AdmixtureHybrid : public RcppParallel::Worker
 
     const unsigned maxiter = 5000;
 
+    // indicator matrix for samples in demes
     D.zeros();
     for (unsigned i = 0; i < sample_index.n_elem; ++i)
       D.at(deme_index[i], i) = 1.;
 
+    // initialize
     Qdeme = Qstart;
     Qdeme.each_col([](arma::vec& x) { x /= arma::accu(x); });
 
@@ -1579,17 +1584,20 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     for (auto& ms : MAGL.like)
       Msat.emplace_back(MAGL, sample_index, Qmat, ms);
 		
+    // EM
 		for (iter=0; iter<maxiter; ++iter)
     {
       bool converged = EMaccel(fixQ ? Q0 : Qdeme, Fmat, Msat);
-      if((iter+1) % 10 == 0) 
-        fprintf(stderr, "[AdmixtureHybrid] Iteration %u, loglik = %f\n", iter+1, loglikelihood);
+      if((iter+1) % 100 == 0) 
+        fprintf(stderr, "[AdmixtureHybrid] [%u] log-likelihood = %f\n", iter+1, loglikelihood);
 			if(converged)
 				break;
     }
   
 		if (iter == maxiter)
-			Rcpp::warning("[AdmixtureHybrid] did not converge in maximum number of iterations");
+			Rcpp::warning("[AdmixtureHybrid] Did not converge in maximum number of iterations");
+    else
+      fprintf(stderr, "[AdmixtureHybrid] Converged in %u iterations\n", iter);
   }
 
   AdmixtureHybrid (const AdmixtureHybrid& rhs, RcppParallel::Split)
@@ -1694,12 +1702,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     //(*this)(0, site_index.n_elem);
 
     if (!(arma::is_finite(Acoef) && arma::is_finite(Bcoef) && arma::is_finite(Qmat_update)))
-    {
-      std::cout << "iter: " << iter << std::endl;
-      Qmat_update.print("Qmat_update");//DEBUG
-      Ms[0].L.slice(2).print("like2");
       Rcpp::stop("[AdmixtureHybrid] Numeric underflow, remove nonsegregating sites");
-    }
 
     F            = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
     Qmat_update += arma::sum(Acoef, 2) + arma::sum(Bcoef, 2);
@@ -1713,7 +1716,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   {
     for (auto& ms : Ms)
     {
-      ms.Fmat = arma::clamp(ms.Fmat, errtol, 1.-errtol);
+      ms.Fmat = arma::clamp(ms.Fmat, errtol, arma::datum::inf);
       ms.Fmat.each_col([](arma::vec& x) { x /= arma::accu(x); });
     }
     F = arma::clamp(F, errtol, 1.-errtol);
@@ -1731,11 +1734,9 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     Q0 = Q;	F0 = F;
     for (auto& ms : Ms)
       ms.F0 = ms.Fmat;
-    //for (arma::uword locus = 0; locus < Ms.size(); ++locus)
-    //  msF0[locus] = Ms[locus].freq;
 
 		// first secant condition
-    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+    loglikelihood = EM(Q, F, Ms); //project(Q, F, Ms);
 	  Q1  = Q;		  	F1  = F;
 		Qd1 = Q - Q0;   Fd1 = F - F0;
     double ll1 = loglikelihood;
@@ -1745,12 +1746,6 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       ms.F1 = ms.Fmat; ms.Fd1 = ms.F1 - ms.F0;
       sr2  += arma::accu(arma::pow(ms.Fd1,2));
     }
-    //for (arma::uword locus = 0; locus < Ms.size(); ++locus)
-    //{
-    //  msF1[locus]   = Ms[locus].freq;
-    //  msFd1[locus]  = msF1[locus] - msF0[locus];
-    //  sr2          += arma::accu(arma::pow(msFd1[locus],2));
-    //}
 	  if (!arma::is_finite(sr2) || fabs(ll1 - ll0) < tol || sqrt(sr2) < tol)
 			return true;
     
@@ -1758,7 +1753,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       return false;
 
 		// second secant condition
-    loglikelihood = EM(Q, F, Ms); project(Q, F, Ms);
+    loglikelihood = EM(Q, F, Ms); //project(Q, F, Ms);
 	  Q2  = Q;		  	F2  = F;
 		Qd2 = Q - Q1;   Fd2 = F - F1;
     double em  = loglikelihood;
@@ -1768,12 +1763,6 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       ms.F2 = ms.Fmat; ms.Fd2 = ms.F2 - ms.F1;
       sq2  += arma::accu(arma::pow(ms.Fd2,2));
     }
-    //for (arma::uword locus = 0; locus < Ms.size(); ++locus)
-    //{
-    //  msF2[locus]   = Ms[locus].freq;
-    //  msFd2[locus]  = msF2[locus] - msF1[locus];
-    //  sq2          += arma::accu(arma::pow(msFd2[locus],2));
-    //}
 	  if (!arma::is_finite(sq2) || fabs(em - ll1) < tol || sqrt(sq2) < tol)
 			return true;
 
@@ -1785,20 +1774,13 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       ms.Fd3  = ms.Fd2 - ms.Fd1;
       sv2    += arma::accu(arma::pow(ms.Fd3,2));
     }
-    //for (arma::uword locus = 0; locus < Ms.size(); ++locus)
-    //{
-    //  msFd3[locus]  = msFd2[locus] - msFd1[locus];
-    //  sv2          += arma::accu(arma::pow(msFd3[locus],2));
-    //}
 	  double alpha = sqrt(sr2/sv2);
 		alpha = std::max(stepmin, std::min(stepmax, alpha));
 
     F = F0 + 2.*alpha*Fd1 + alpha*alpha*Fd3;
     Q = Q0 + 2.*alpha*Qd1 + alpha*alpha*Qd3;
     for (auto& ms : Ms)
-      ms.Fmat = ms.F0 + 2.*alpha*ms.Fd1 + 2.*std::pow(alpha,2)*ms.Fd3;
-    //for (arma::uword locus = 0; locus < Ms.size(); ++locus)
-    //  Ms[locus].freq = msF0[locus] + 2.*alpha*msFd1[locus] + alpha*alpha*msFd3[locus];
+      ms.Fmat = ms.F0 + 2.*alpha*ms.Fd1 + alpha*alpha*ms.Fd3;
     project (Q, F, Ms);
 
 		// stabilize
@@ -1809,8 +1791,6 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     {
       loglikelihood = em; Q = Q2; F = F2;
       for (auto& ms : Ms) ms.Fmat = ms.F2;
-      //for (arma::uword locus = 0; locus < Ms.size(); ++locus)
-      //  Ms[locus].freq = msF2[locus];
     }
 
 		if (alpha == stepmax)
@@ -3891,13 +3871,16 @@ struct Haplodiplo
         );
   }
 
+  //overloaded methods aren't parsed unfortunately
+  //Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, unsigned K)
+  //{
+  //  arma::mat Q = arma::randu<arma::mat>(K, sample_index.n_elem);
+  //  return admixture_hybrid(site_index, sample_index, deme_index, Q);
+  //}
+
   Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q)
   {
-    arma::arma_rng::set_seed(1);
-
-    //arma::mat Q = arma::randu<arma::mat>(K, sample_index.n_elem);
-
-    fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using all data\n");    
+    fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using %lu biallelic and %u multiallelic loci\n", GL.sites, MAGL.loci);    
     AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, false);
 
     // correctly setting dimensions
