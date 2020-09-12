@@ -3892,7 +3892,7 @@ struct Haplodiplo
       Rcpp::NumericVector tmp = Rcpp::wrap(Fms[i]);
       tmp.attr("dim") = Rcpp::Dimension(Fms[i].n_rows, Fms[i].n_cols);
       Fms_out[i] = tmp; 
-      pars_ms += tmp.n_elem;
+      pars_ms += Fms[i].n_elem;
     }
 
     return Rcpp::List::create(
@@ -4161,7 +4161,7 @@ struct Haplodiplo
     return GL.chromosomes;
   }
 
-  std::string vcfbody (const std::string outfile, const std::vector<std::string> chrnames, const bool impute = false, const bool append = false) const
+  void vcfbody (const std::string outfile, const std::vector<std::string> chrnames, const bool impute = false, const bool append = false) const
   {
     // dump vcf body to file
 
