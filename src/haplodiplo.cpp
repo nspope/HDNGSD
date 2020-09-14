@@ -203,12 +203,6 @@ namespace utils
 
 struct MultiAllelicGenotypeLikelihood
 {
-  // I don't think this is right. I need to settle on whether I multiply heterozygous likelihoods with 2 here or not.
-  // For example, I also multiply by 2 in AdmixtureHybrid
-  // either way is fine, but it needs to be consistent with what is done for SNPs
-  // urg, what does ANGSD do when it dumpts beagle-style 3x logliks? and 10x logliks?
-  // you need to do some testing
-  
   const arma::uvec ploidy;
   const unsigned samples;
   unsigned loci;
@@ -1516,7 +1510,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   public:
   AdmixtureHybrid (const GenotypeLikelihood& GL, const MultiAllelicGenotypeLikelihood& MAGL, 
                    const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec deme_index, 
-                   const arma::mat Qstart, const bool fixQ)
+                   const arma::mat Qstart, const bool fixQ, const unsigned maxiter, const bool dumpQ)
     : GL (GL)
     , MAGL (MAGL)
     , sample_index (sample_index)
@@ -1567,8 +1561,6 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     if (arma::max(deme_index) >= deme_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Deme indices must be 0-based contiguous integers");
 
-    const unsigned maxiter = 5000;
-
     // indicator matrix for samples in demes
     D.zeros();
     for (unsigned i = 0; i < sample_index.n_elem; ++i)
@@ -1589,7 +1581,11 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     {
       bool converged = EMaccel(fixQ ? Q0 : Qdeme, Fmat, Msat);
       if((iter+1) % 100 == 0) 
+      {
         fprintf(stderr, "[AdmixtureHybrid] [%u] log-likelihood = %f\n", iter+1, loglikelihood);
+        if (dumpQ)
+          Qdeme.raw_print("Dumping admixture coefficients:");
+      }
 			if(converged)
 				break;
     }
@@ -3871,17 +3867,10 @@ struct Haplodiplo
         );
   }
 
-  //overloaded methods aren't parsed unfortunately
-  //Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, unsigned K)
-  //{
-  //  arma::mat Q = arma::randu<arma::mat>(K, sample_index.n_elem);
-  //  return admixture_hybrid(site_index, sample_index, deme_index, Q);
-  //}
-
-  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q)
+  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q, unsigned maxiter = 1000)
   {
     fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using %lu biallelic and %u multiallelic loci\n", GL.sites, MAGL.loci);    
-    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, false);
+    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, false, maxiter, true);
 
     // correctly setting dimensions
     std::vector<arma::mat> Fms = admix.microsat_frequencies();
