@@ -1510,7 +1510,8 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   public:
   AdmixtureHybrid (const GenotypeLikelihood& GL, const MultiAllelicGenotypeLikelihood& MAGL, 
                    const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec deme_index, 
-                   const arma::mat Qstart, const bool fixQ, const unsigned maxiter, const bool dumpQ)
+                   const arma::mat Qstart, const bool fixQ, const arma::mat Fstart, const bool fixF,
+                   const unsigned maxiter, const bool dumpQ)
     : GL (GL)
     , MAGL (MAGL)
     , sample_index (sample_index)
@@ -1556,6 +1557,8 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       Rcpp::stop ("[AdmixtureHybrid] Invalid entries in sample index");
     if (Qstart.n_rows != Qdeme.n_rows || Qstart.n_cols != Qdeme.n_cols)
       Rcpp::stop ("[AdmixtureHybrid] Starting values for Q are of wrong dimension");
+    if (Fstart.n_rows != Qdeme.n_cols || Fstart.n_cols != site_index.n_elem)
+      Rcpp::stop ("[AdmixtureHybrid] Starting values for F are of wrong dimension");
     if (deme_index.n_elem != sample_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Length of deme index does not match length of sample index");
     if (arma::max(deme_index) >= deme_index.n_elem)
@@ -1570,7 +1573,8 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     Qdeme = Qstart;
     Qdeme.each_col([](arma::vec& x) { x /= arma::accu(x); });
 
-    Fmat.randu();
+    //Fmat.randu();
+    Fmat = Fstart;
     Fmat = arma::clamp(Fmat, errtol, 1.-errtol);
 
     for (auto& ms : MAGL.like)
@@ -1579,7 +1583,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     // EM
 		for (iter=0; iter<maxiter; ++iter)
     {
-      bool converged = EMaccel(fixQ ? Q0 : Qdeme, Fmat, Msat);
+      bool converged = EMaccel(fixQ ? Q0 : Qdeme, fixF ? F0 : Fmat, Msat);
       if((iter+1) % 100 == 0) 
       {
         fprintf(stderr, "[AdmixtureHybrid] [%u] log-likelihood = %f\n", iter+1, loglikelihood);
@@ -3867,10 +3871,11 @@ struct Haplodiplo
         );
   }
 
-  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q, unsigned maxiter = 1000)
+  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q, bool fixQ, arma::mat F, bool fixF, unsigned maxiter = 1000)
   {
     fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using %lu biallelic and %u multiallelic loci\n", GL.sites, MAGL.loci);    
-    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, false, maxiter, true);
+
+    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, fixQ, F, fixF, maxiter, true);
 
     // correctly setting dimensions
     std::vector<arma::mat> Fms = admix.microsat_frequencies();
