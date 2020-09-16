@@ -1726,7 +1726,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
 
   bool EMaccel (arma::mat& Q, arma::mat& F, std::vector<Microsat>& Ms)
   {
-		const double tol = 1e-5;
+		const double tol = 1e-8;
 		const double mstep = 4;
 
     double ll0 = loglikelihood;
