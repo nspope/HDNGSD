@@ -1563,8 +1563,6 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       Rcpp::stop ("[AdmixtureHybrid] Length of deme index does not match length of sample index");
     if (arma::max(deme_index) >= deme_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Deme indices must be 0-based contiguous integers");
-    if (arma::max(deme_index) >= Qstart.n_rows)
-      Rcpp::stop ("[AdmixtureHybrid] Deme indices exceed number of clusters");
 
     // indicator matrix for samples in demes
     D.zeros();
