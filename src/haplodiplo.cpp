@@ -1521,7 +1521,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     , D (arma::max(deme_index) + 1, sample_index.n_elem)
     , Qdeme (K, arma::max(deme_index) + 1)
     , Qmat (K, sample_index.n_elem)
-    , Fmat (K, site_index.n_elem, arma::fill::randu)
+    , Fmat (K, site_index.n_elem)
     , loglik (sample_index.n_elem, site_index.n_elem)
     , Acoef (K, sample_index.n_elem, site_index.n_elem)
     , Bcoef (K, sample_index.n_elem, site_index.n_elem)
@@ -1564,6 +1564,10 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       Rcpp::stop ("[AdmixtureHybrid] Length of deme index does not match length of sample index");
     if (arma::max(deme_index) >= deme_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Deme indices must be 0-based contiguous integers");
+    if (Fstart.max() > 1.0 || Fstart.min() < 0.0)
+      Rcpp::stop ("[AdmixtureHybrid] Starting allele frequencies must be in [0,1]");
+    if (Qstart.min() < 0.0)
+      Rcpp::stop ("[AdmixtureHybrid] Starting admixture proportions must be positive");
 
     // indicator matrix for samples in demes
     D.zeros();
@@ -1575,8 +1579,8 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     Qdeme.each_col([](arma::vec& x) { x /= arma::accu(x); });
 
     //Fmat.randu();
+    //Fmat = arma::clamp(Fmat, errtol, 1.-errtol);
     Fmat = Fstart;
-    Fmat = arma::clamp(Fmat, errtol, 1.-errtol);
 
     for (auto& ms : MAGL.like)
       Msat.emplace_back(MAGL, sample_index, Qmat, ms);
