@@ -1331,7 +1331,8 @@ struct AdmixtureHybrid : public RcppParallel::Worker
         Rcpp::stop ("[Microsat] Dimension mismatch");
 
       Q.each_col([](arma::vec& x) { x /= arma::accu(x); });
-      Fmat = arma::randu<arma::mat>(num_alleles, num_clusters);
+      //Fmat = arma::randu<arma::mat>(num_alleles, num_clusters);
+      Fmat = arma::ones<arma::mat>(num_alleles, num_clusters);
       Fmat.each_col([](arma::vec& x) { x /= arma::accu(x); });
       Emat = expected_frequencies(Q, Fmat);
       Smat = expected_counts(Q, Fmat, Emat);
