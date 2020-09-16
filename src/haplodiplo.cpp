@@ -3886,7 +3886,7 @@ struct Haplodiplo
       Rcpp::NumericVector tmp = Rcpp::wrap(Fms[i]);
       tmp.attr("dim") = Rcpp::Dimension(Fms[i].n_rows, Fms[i].n_cols);
       Fms_out[i] = tmp; 
-      pars_ms += Fms[i].n_elem;
+      pars_ms += Q.n_rows * (Fms[i].n_rows - 1);
     }
 
     return Rcpp::List::create(
@@ -3896,7 +3896,7 @@ struct Haplodiplo
         Rcpp::_["F_msat"] = Fms_out, 
         Rcpp::_["Q"] = admix.admixture_proportions(),
         Rcpp::_["AIC"] = -2. * admix.loglikelihood + 
-          2 * double(admix.snp_frequencies().n_elem + admix.admixture_proportions().n_elem + pars_ms)
+          2 * double(admix.snp_frequencies().n_elem + (Q.n_rows - 1) * admix.admixture_proportions().n_cols + pars_ms)
         );
   }
 
