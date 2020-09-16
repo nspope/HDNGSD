@@ -1557,12 +1557,14 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       Rcpp::stop ("[AdmixtureHybrid] Invalid entries in sample index");
     if (Qstart.n_rows != Qdeme.n_rows || Qstart.n_cols != Qdeme.n_cols)
       Rcpp::stop ("[AdmixtureHybrid] Starting values for Q are of wrong dimension");
-    if (Fstart.n_rows != Qdeme.n_cols || Fstart.n_cols != site_index.n_elem)
+    if (Fstart.n_rows != Qdeme.n_rows || Fstart.n_cols != site_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Starting values for F are of wrong dimension");
     if (deme_index.n_elem != sample_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Length of deme index does not match length of sample index");
     if (arma::max(deme_index) >= deme_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Deme indices must be 0-based contiguous integers");
+    if (arma::max(deme_index) >= Qstart.n_rows)
+      Rcpp::stop ("[AdmixtureHybrid] Deme indices exceed number of clusters");
 
     // indicator matrix for samples in demes
     D.zeros();
