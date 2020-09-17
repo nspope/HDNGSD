@@ -1571,6 +1571,11 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     if (Qstart.min() < 0.0)
       Rcpp::stop ("[AdmixtureHybrid] Starting admixture proportions must be positive");
 
+    if (fix_Fmat)
+      fprintf(stderr, "[AdmixtureHybrid] Not optimizing SNP frequencies\n");
+    if (fix_Qmat)
+      fprintf(stderr, "[AdmixtureHybrid] Not optimizing admixture coefficients\n");
+
     // indicator matrix for samples in demes
     D.zeros();
     for (unsigned i = 0; i < sample_index.n_elem; ++i)
