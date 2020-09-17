@@ -1495,6 +1495,9 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   unsigned iter = 0;
 
   private:
+  bool   fix_Fmat = false,
+         fix_Qmat = false,
+         verbose  = true;
   bool   acceleration = true;        // use EM acceleration?
   double errtol = 1e-8;              // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
@@ -1511,8 +1514,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   public:
   AdmixtureHybrid (const GenotypeLikelihood& GL, const MultiAllelicGenotypeLikelihood& MAGL, 
                    const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec deme_index, 
-                   const arma::mat Qstart, const bool fixQ, const arma::mat Fstart, const bool fixF,
-                   const unsigned maxiter, const bool dumpQ)
+                   const arma::mat Qstart, const arma::mat Fstart, const unsigned maxiter)
     : GL (GL)
     , MAGL (MAGL)
     , sample_index (sample_index)
@@ -1588,11 +1590,11 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     // EM
 		for (iter=0; iter<maxiter; ++iter)
     {
-      bool converged = EMaccel(fixQ ? Q0 : Qdeme, fixF ? F0 : Fmat, Msat);
+      bool converged = EMaccel(Qdeme, Fmat, Msat);
       if((iter+1) % 100 == 0) 
       {
         fprintf(stderr, "[AdmixtureHybrid] [%u] log-likelihood = %f\n", iter+1, loglikelihood);
-        if (dumpQ)
+        if (verbose)
           Qdeme.raw_print("Dumping admixture coefficients:");
       }
 			if(converged)
@@ -1697,6 +1699,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     Bcoef.zeros();
 
     Qmat = Q * D;
+    Fmat = F;
 
     arma::mat Qmat_update = arma::zeros<arma::mat>(arma::size(Qmat));
     double    loglik_msat = 0.;
@@ -1708,11 +1711,16 @@ struct AdmixtureHybrid : public RcppParallel::Worker
 
     if (!(arma::is_finite(Acoef) && arma::is_finite(Bcoef) && arma::is_finite(Qmat_update)))
       Rcpp::stop("[AdmixtureHybrid] Numeric underflow, remove nonsegregating sites");
-
-    F            = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
     Qmat_update += arma::sum(Acoef, 2) + arma::sum(Bcoef, 2);
-    Q            = Qmat_update * D.t(); 
-    Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+
+    if (!fix_Fmat)
+      F = arma::sum(Acoef, 1) / (arma::sum(Acoef, 1) + arma::sum(Bcoef, 1));
+
+    if (!fix_Qmat)
+    {
+      Q = Qmat_update * D.t(); 
+      Q.each_col([](arma::vec& x) { x /= arma::accu(x); }); // make sum_k q_{jk} = 1
+    }
     
     return arma::accu(loglik) + loglik_msat;
   }
@@ -3876,11 +3884,11 @@ struct Haplodiplo
         );
   }
 
-  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q, bool fixQ, arma::mat F, bool fixF, unsigned maxiter = 1000)
+  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q, arma::mat F, unsigned maxiter = 1000)
   {
     fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using %lu biallelic and %u multiallelic loci\n", GL.sites, MAGL.loci);    
 
-    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, fixQ, F, fixF, maxiter, true);
+    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, F, maxiter);
 
     // correctly setting dimensions
     std::vector<arma::mat> Fms = admix.microsat_frequencies();
