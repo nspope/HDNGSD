@@ -1499,7 +1499,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
          fix_Qmat = false,
          verbose  = true;
   bool   acceleration = true;        // use EM acceleration?
-  double errtol = 1e-8;              // not using dynamic bounds
+  double errtol = 1e-16;             // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
 
 	// references for workers
