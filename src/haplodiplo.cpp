@@ -1502,6 +1502,9 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   double errtol = 1e-16;             // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
 
+  const arma::uvec sample_index_msat,
+                   sample_index_snp;
+
 	// references for workers
   const arma::uvec &rsample_index, &rsite_index;
   const arma::mat &rQmat, &rFmat;
@@ -1513,11 +1516,11 @@ struct AdmixtureHybrid : public RcppParallel::Worker
 
   public:
   AdmixtureHybrid (const GenotypeLikelihood& GL, const MultiAllelicGenotypeLikelihood& MAGL, 
-                   const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec deme_index, 
-                   const arma::mat Qstart, const arma::mat Fstart, const unsigned maxiter)
+                   const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec marker_type,
+                   const arma::uvec deme_index, const arma::mat Qstart, const arma::mat Fstart, const unsigned maxiter)
     : GL (GL)
     , MAGL (MAGL)
-    , sample_index (sample_index)
+    , sample_index (sample_index) 
     , site_index (site_index)
     , K (Qstart.n_rows)
     , D (arma::max(deme_index) + 1, sample_index.n_elem)
@@ -1527,8 +1530,10 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     , loglik (sample_index.n_elem, site_index.n_elem)
     , Acoef (K, sample_index.n_elem, site_index.n_elem)
     , Bcoef (K, sample_index.n_elem, site_index.n_elem)
+    , sample_index_msat (sample_index.elem(arma::find(marker_type >= 1)))
+    , sample_index_snp (sample_index.elem(arma::find(marker_type <= 1)))
     // read-write references for workers 
-    , rsample_index (sample_index)
+    , rsample_index (sample_index_snp)
     , rsite_index (site_index)
     , rQmat (Qmat)
     , rFmat (Fmat)
@@ -1564,15 +1569,19 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       Rcpp::stop ("[AdmixtureHybrid] Starting values for F are of wrong dimension");
     if (deme_index.n_elem != sample_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Length of deme index does not match length of sample index");
+    if (marker_type.n_elem != sample_index.n_elem)
+      Rcpp::stop ("[AdmixtureHybrid] Length of marker type does not match length of sample index");
     if (arma::max(deme_index) >= deme_index.n_elem)
       Rcpp::stop ("[AdmixtureHybrid] Deme indices must be 0-based contiguous integers");
+    if (arma::max(marker_type) >= 3)
+      Rcpp::stop ("[AdmixtureHybrid] Marker type must be in [0, 1, 2]");
     if (Fstart.max() > 1.0 || Fstart.min() < 0.0)
       Rcpp::stop ("[AdmixtureHybrid] Starting allele frequencies must be in [0,1]");
     if (Qstart.min() < 0.0)
       Rcpp::stop ("[AdmixtureHybrid] Starting admixture proportions must be positive");
 
     fprintf(stderr,
-        "[AdmixtureHybrid]\n\tverbose=%d\n\tfix_Qmat=%d\n\tfix_Fmat=%d\n\tacceleration=%d\n\terrtol=%f\n\tstepmax=%f\n\tstepmin=%f\n\tmaxiter=%d\n",
+        "[AdmixtureHybrid] [verbose=%d fix_Qmat=%d fix_Fmat=%d acceleration=%d errtol=%f stepmax=%f stepmin=%f maxiter=%d]\n",
         verbose, fix_Qmat, fix_Fmat, acceleration, errtol, stepmax, stepmin, maxiter);
 
     // indicator matrix for samples in demes
@@ -1589,7 +1598,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     Fmat = Fstart;
 
     for (auto& ms : MAGL.like)
-      Msat.emplace_back(MAGL, sample_index, Qmat, ms);
+      Msat.emplace_back(MAGL, sample_index_msat, Qmat, ms);
 		
     // EM
 		for (iter=0; iter<maxiter; ++iter)
@@ -1710,11 +1719,14 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     for (auto& ms : Ms)
       loglik_msat += ms.EM(Qmat, Qmat_update);
 
-    RcppParallel::parallelFor(0, site_index.n_elem, *this); //uses Qmat
+    RcppParallel::parallelFor(0, site_index.n_elem, *this); //uses Qmat,Fmat
     //(*this)(0, site_index.n_elem);
 
     if (!(arma::is_finite(Acoef) && arma::is_finite(Bcoef) && arma::is_finite(Qmat_update)))
+    {
+      //instead: warning and return NaN?
       Rcpp::stop("[AdmixtureHybrid] Numeric underflow, remove nonsegregating sites");
+    }
     Qmat_update += arma::sum(Acoef, 2) + arma::sum(Bcoef, 2);
 
     if (!fix_Fmat)
@@ -3888,11 +3900,11 @@ struct Haplodiplo
         );
   }
 
-  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::mat Q, arma::mat F, unsigned maxiter = 1000)
+  Rcpp::List admixture_hybrid (arma::uvec site_index, arma::uvec sample_index, arma::uvec deme_index, arma::uvec marker_type, arma::mat Q, arma::mat F, unsigned maxiter = 1000)
   {
     fprintf(stderr, "[Haplodiplo::admixture_hybrid] Using %lu biallelic and %u multiallelic loci\n", GL.sites, MAGL.loci);    
 
-    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, Q, F, maxiter);
+    AdmixtureHybrid admix (GL, MAGL, site_index, sample_index, deme_index, marker_type, Q, F, maxiter);
 
     // correctly setting dimensions
     std::vector<arma::mat> Fms = admix.microsat_frequencies();
