@@ -1516,8 +1516,8 @@ struct AdmixtureHybrid : public RcppParallel::Worker
 
   public:
   AdmixtureHybrid (const GenotypeLikelihood& GL, const MultiAllelicGenotypeLikelihood& MAGL, 
-                   const arma::uvec site_index, const arma::uvec sample_index, const arma::uvec marker_type,
-                   const arma::uvec deme_index, const arma::mat Qstart, const arma::mat Fstart, const unsigned maxiter)
+                   const arma::uvec site_index, const arma::uvec sample_index, 
+                   const arma::uvec deme_index, const arma::uvec marker_type, const arma::mat Qstart, const arma::mat Fstart, const unsigned maxiter)
     : GL (GL)
     , MAGL (MAGL)
     , sample_index (sample_index) 
