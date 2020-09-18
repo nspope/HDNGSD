@@ -1307,7 +1307,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   struct Microsat
   {
     const MultiAllelicGenotypeLikelihood &MAGL;
-    const arma::uvec sample_index;
+    const arma::uvec sample_index, eval_msat;
     const arma::cube L;
     const arma::uword num_alleles, num_samples, num_clusters;
 
@@ -1315,9 +1315,10 @@ struct AdmixtureHybrid : public RcppParallel::Worker
               F0, F1, F2, Fd1, Fd2, Fd3; // temporaries for acceleration
     arma::vec loglikelihood;
 
-    Microsat (const MultiAllelicGenotypeLikelihood& MAGL, const arma::uvec sample_index, arma::mat Q, const arma::cube like)
+    Microsat (const MultiAllelicGenotypeLikelihood& MAGL, const arma::uvec sample_index, const arma::uvec eval_msat, arma::mat Q, const arma::cube like)
       : MAGL (MAGL)
       , sample_index (sample_index)
+      , eval_msat (eval_msat)
       , L (like)
       , num_alleles (like.n_rows)
       , num_samples (sample_index.n_elem)
@@ -1325,6 +1326,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       , loglikelihood (sample_index.n_elem)
     {
       if (Q.n_cols      != num_samples             ||
+          num_samples   != eval_msat.n_elem        ||
           MAGL.samples  != like.n_slices           ||
           like.n_cols   != num_alleles             ||
           arma::max(sample_index) >= like.n_slices )
@@ -1362,9 +1364,14 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       // compute HWE frequencies per sample
       arma::mat out (num_alleles, num_samples, arma::fill::zeros);
       for (unsigned s=0; s<num_samples; ++s) //samples
-        for (unsigned k=0; k<num_clusters; ++k) //clusters
-          for (unsigned i=0; i<num_alleles; ++i) //alleles
-            out.at(i,s) += Q.at(k,s) * F.at(i,k);
+      {
+        if (eval_msat[s])
+        {
+          for (unsigned k=0; k<num_clusters; ++k) //clusters
+            for (unsigned i=0; i<num_alleles; ++i) //alleles
+              out.at(i,s) += Q.at(k,s) * F.at(i,k);
+        }
+      }
 
       return out;
     }
@@ -1375,39 +1382,42 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       arma::mat out (num_alleles, num_samples, arma::fill::zeros);
       for (unsigned s=0; s<num_samples; ++s) //samples
       {
-        double den = 0., p = 0.;
-        arma::uword s2 = sample_index[s];
-        if (MAGL.ploidy.at(s2)==2)
+        if (eval_msat[s])
         {
-          for (unsigned i=0; i<num_alleles; ++i) //alleles
-            for (unsigned j=i; j<num_alleles; ++j) //alleles again
-            {
-              if (i==j)
-              {
-                p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
-                den += p;
-                out.at(i,s) += 2. * p;
-              }
-              else
-              {
-                p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
-                den += 2. * p;
-                // 8/30/20 adding the factor of 2 below seems to have fixed the EM updates
-                out.at(i,s) += 2. * p;
-                out.at(j,s) += 2. * p;
-              }
-            }
-        } 
-        else 
-        {
-          for (unsigned i=0; i<num_alleles; ++i) //alleles
+          double den = 0., p = 0.;
+          arma::uword s2 = sample_index[s];
+          if (MAGL.ploidy.at(s2)==2)
           {
-            p = L.at(i,i,s2) * S.at(i,s);
-            den += p;
-            out.at(i,s) += p;
+            for (unsigned i=0; i<num_alleles; ++i) //alleles
+              for (unsigned j=i; j<num_alleles; ++j) //alleles again
+              {
+                if (i==j)
+                {
+                  p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
+                  den += p;
+                  out.at(i,s) += 2. * p;
+                }
+                else
+                {
+                  p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
+                  den += 2. * p;
+                  // 8/30/20 adding the factor of 2 below seems to have fixed the EM updates
+                  out.at(i,s) += 2. * p;
+                  out.at(j,s) += 2. * p;
+                }
+              }
+          } 
+          else 
+          {
+            for (unsigned i=0; i<num_alleles; ++i) //alleles
+            {
+              p = L.at(i,i,s2) * S.at(i,s);
+              den += p;
+              out.at(i,s) += p;
+            }
           }
+          out.col(s) /= 2.*den; //scales haploid expectation to 0.5 as for snps
         }
-        out.col(s) /= 2.*den; //scales haploid expectation to 0.5 as for snps
       }
       return out;
     }
@@ -1417,9 +1427,14 @@ struct AdmixtureHybrid : public RcppParallel::Worker
       // contribution to admixture coeff update 
       arma::mat Qup = arma::zeros<arma::mat>(arma::size(Q));
       for (unsigned s=0; s<num_samples; ++s) // samples
-        for (unsigned k=0; k<num_clusters; ++k) // clusters
-          for (unsigned i=0; i<num_alleles; ++i) // alleles
-            Qup.at(k,s) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
+      {
+        if (eval_msat[s])
+        {
+          for (unsigned k=0; k<num_clusters; ++k) // clusters
+            for (unsigned i=0; i<num_alleles; ++i) // alleles
+              Qup.at(k,s) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
+        }
+      }
       return Qup;
     }
 
@@ -1434,7 +1449,10 @@ struct AdmixtureHybrid : public RcppParallel::Worker
         {
           for (unsigned s=0; s<num_samples; ++s)
           {
-            A.at(i) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
+            if (eval_msat[s])
+            {
+              A.at(i) += E.at(i,s) * Q.at(k,s) * F.at(i,k) / S.at(i,s);
+            }
           }
         }
         Fup.col(k) = A / arma::accu(A);
@@ -1446,38 +1464,41 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     arma::vec loglik (const arma::mat& Q, const arma::mat& F, const arma::mat& S)
     {
       // calculate per-sample loglikelihood
-      arma::vec ll (num_samples);
+      arma::vec ll (num_samples, arma::fill::zeros);
 
       for (unsigned s=0; s<num_samples; ++s)
       {
-        double den = 0., p = 0.;
-        arma::uword s2 = sample_index[s];
-        if (MAGL.ploidy.at(s2)==2)
+        if (eval_msat[s])
         {
-          for (unsigned i=0; i<num_alleles; ++i)
-            for (unsigned j=i; j<num_alleles; ++j)
-            {
-              if (i == j)
-              {
-                p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
-                den += p;
-              }
-              else
-              {
-                p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
-                den += 2. * p;
-              }
-            }
-        } 
-        else 
-        {
-          for (unsigned i=0; i<num_alleles; ++i)
+          double den = 0., p = 0.;
+          arma::uword s2 = sample_index[s];
+          if (MAGL.ploidy.at(s2)==2)
           {
-            p = L.at(i,i,s2) * S.at(i,s);
-            den += p;
+            for (unsigned i=0; i<num_alleles; ++i)
+              for (unsigned j=i; j<num_alleles; ++j)
+              {
+                if (i == j)
+                {
+                  p = L.at(i,i,s2) * std::pow(S.at(i,s), 2);
+                  den += p;
+                }
+                else
+                {
+                  p = L.at(i,j,s2) * S.at(j,s) * S.at(i,s);
+                  den += 2. * p;
+                }
+              }
+          } 
+          else 
+          {
+            for (unsigned i=0; i<num_alleles; ++i)
+            {
+              p = L.at(i,i,s2) * S.at(i,s);
+              den += p;
+            }
           }
+          ll[s] = log(den);
         }
-        ll[s] = log(den);
       }
       return ll;
     }
@@ -1502,11 +1523,12 @@ struct AdmixtureHybrid : public RcppParallel::Worker
   double errtol = 1e-16;             // not using dynamic bounds
   double stepmax = 1., stepmin = 1.; // adaptive steplength
 
-  const arma::uvec sample_index_msat,
-                   sample_index_snp;
+  arma::uvec eval_msat,
+             eval_snp;
 
 	// references for workers
-  const arma::uvec &rsample_index, &rsite_index;
+  const arma::uvec &rsample_index, &rsite_index; 
+  arma::uvec &reval_snp;
   const arma::mat &rQmat, &rFmat;
   arma::mat &rloglik;
   arma::cube &rAcoef, &rBcoef;
@@ -1530,11 +1552,12 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     , loglik (sample_index.n_elem, site_index.n_elem)
     , Acoef (K, sample_index.n_elem, site_index.n_elem)
     , Bcoef (K, sample_index.n_elem, site_index.n_elem)
-    , sample_index_msat (sample_index.elem(arma::find(marker_type >= 1)))
-    , sample_index_snp (sample_index.elem(arma::find(marker_type <= 1)))
+    , eval_msat (sample_index.n_elem, arma::fill::zeros)
+    , eval_snp (sample_index.n_elem, arma::fill::zeros)
     // read-write references for workers 
-    , rsample_index (sample_index_snp)
+    , rsample_index (sample_index)
     , rsite_index (site_index)
+    , reval_snp (eval_snp)
     , rQmat (Qmat)
     , rFmat (Fmat)
     , rloglik (loglik)
@@ -1584,6 +1607,9 @@ struct AdmixtureHybrid : public RcppParallel::Worker
         "[AdmixtureHybrid] [verbose=%d fix_Qmat=%d fix_Fmat=%d acceleration=%d errtol=%f stepmax=%f stepmin=%f maxiter=%d]\n",
         verbose, fix_Qmat, fix_Fmat, acceleration, errtol, stepmax, stepmin, maxiter);
 
+    eval_snp.elem(arma::find(marker_type <= 1)).ones();
+    eval_msat.elem(arma::find(marker_type >= 1)).ones();
+
     // indicator matrix for samples in demes
     D.zeros();
     for (unsigned i = 0; i < sample_index.n_elem; ++i)
@@ -1598,7 +1624,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     Fmat = Fstart;
 
     for (auto& ms : MAGL.like)
-      Msat.emplace_back(MAGL, sample_index_msat, Qmat, ms);
+      Msat.emplace_back(MAGL, sample_index, eval_msat, Qmat, ms);
 		
     // EM
 		for (iter=0; iter<maxiter; ++iter)
@@ -1627,6 +1653,7 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     // references that interface with slaves
     , rsite_index (rhs.rsite_index)
     , rsample_index (rhs.rsample_index)
+    , reval_snp (rhs.reval_snp)
     , rQmat (rhs.rQmat)
     , rFmat (rhs.rFmat)
     , rloglik (rhs.rloglik)
@@ -1696,11 +1723,14 @@ struct AdmixtureHybrid : public RcppParallel::Worker
     {
       for (unsigned j=0; j<rsample_index.n_elem; ++j)
       {
-        unsigned j2 = rsample_index[j];
-        if (GL.ploidy[j2] == 1)
-          Haploid(rAcoef, rBcoef, rloglik, i, j);
-        else if (GL.ploidy[j2] == 2)
-          Diploid(rAcoef, rBcoef, rloglik, i, j);
+        if (eval_snp[j])
+        {
+          unsigned j2 = rsample_index[j];
+          if (GL.ploidy[j2] == 1)
+            Haploid(rAcoef, rBcoef, rloglik, i, j);
+          else if (GL.ploidy[j2] == 2)
+            Diploid(rAcoef, rBcoef, rloglik, i, j);
+        }
       }
     }
   }
