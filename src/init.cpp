@@ -136,6 +136,19 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// hypergeometric_basis
+arma::mat hypergeometric_basis(unsigned N, unsigned n);
+RcppExport SEXP _haplodiplo_hypergeometric_basis(SEXP NSEXP, SEXP nSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< unsigned >::type N(NSEXP);
+    Rcpp::traits::input_parameter< unsigned >::type n(nSEXP);
+    rcpp_result_gen = Rcpp::wrap(hypergeometric_basis(N, n));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 RcppExport SEXP _rcpp_module_boot_Haplodiplo();
 
 static const R_CallMethodDef CallEntries[] = {
@@ -148,6 +161,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_haplodiplo_hfs1d", (DL_FUNC) &_haplodiplo_hfs1d, 2},
     {"_haplodiplo_basis", (DL_FUNC) &_haplodiplo_basis, 4},
     {"_haplodiplo_cycle_cube", (DL_FUNC) &_haplodiplo_cycle_cube, 1},
+    {"_haplodiplo_hypergeometric_basis", (DL_FUNC) &_haplodiplo_hypergeometric_basis, 2},
     {"_rcpp_module_boot_Haplodiplo", (DL_FUNC) &_rcpp_module_boot_Haplodiplo, 0},
     {NULL, NULL, 0}
 };

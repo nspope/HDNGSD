@@ -5,6 +5,10 @@ cycle_cube <- function(inp) {
     .Call(`_haplodiplo_cycle_cube`, inp)
 }
 
+hypergeometric_basis <- function(N, n) {
+    .Call(`_haplodiplo_hypergeometric_basis`, N, n)
+}
+
 sfs1d <- function(saf, block, num_boot, fold) {
     .Call(`_haplodiplo_sfs1d`, saf, block, num_boot, fold)
 }

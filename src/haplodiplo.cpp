@@ -38,6 +38,35 @@ arma::cube cycle_cube (const arma::cube& inp)
   return out;
 }
 
+bool multi_loop (arma::uvec& bin, arma::uvec& nchr, int i)
+{
+  if(++bin[i] <= nchr[i]) return true;
+  if(i==0) return false;
+  if(multi_loop(bin, nchr, i-1)) 
+  {
+    bin[i] = 0;
+    return true;
+  }
+  return false;
+}
+
+// [[Rcpp::export]]
+arma::mat hypergeometric_basis (unsigned N, unsigned n)
+{
+  if (n > N)
+    Rcpp::stop("[hypergeometric_basis] Can only down-project");
+
+  // 0 <= K <= N are bins in the original SFS
+  // 0 <= k <= n are bins in the projected SFS
+  arma::mat out (n + 1, N + 1, arma::fill::zeros);
+  for (unsigned K=0; K<=N; ++K)
+    for (unsigned k=0; k<=n; ++k)
+      out.at(k,K) += 
+        exp(R::lchoose(K, k) + R::lchoose(N-K,n-k) - R::lchoose(N,n));
+
+  return out;
+}
+
 namespace utils 
 {
 
